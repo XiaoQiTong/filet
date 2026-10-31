@@ -28,7 +28,7 @@
   <div id="app" class="app" hidden>
     <header>
       <div class="brand">filet<span>P2P 直发</span></div>
-      <div class="who"><span id="whoami"></span><button id="logout" class="ghost" type="button">退出</button></div>
+      <div class="who"><span id="whoami"></span><button id="recvToggle" class="ghost" type="button">接收文件</button><button id="logout" class="ghost" type="button">退出</button></div>
     </header>
     <main>
       <section class="panel">
@@ -36,7 +36,7 @@
           <h2>我的设备</h2>
           <button id="refresh" class="ghost" type="button">刷新</button>
         </div>
-        <p class="hint">只有在线设备能接收。目标设备需要先运行 <code>filet agent</code>。</p>
+        <p class="hint">只有在线设备能接收：目标设备需要运行 <code>filet agent</code>，或在浏览器页面开启「接收文件」。</p>
         <ul id="devices" class="devices"></ul>
       </section>
 
@@ -54,6 +54,15 @@
         <ul id="transfers" class="transfers"></ul>
       </section>
     </main>
+
+    <section id="recvPanel" class="panel recv" hidden>
+      <div class="panel-head">
+        <h2>接收文件</h2>
+        <button id="pickDir" class="ghost" type="button" hidden>选择保存目录</button>
+      </div>
+      <p class="hint" id="recvStatus"></p>
+      <ul id="recvList" class="transfers"></ul>
+    </section>
   </div>
 
   <script src="/static/app.js"></script>

@@ -54,7 +54,7 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	if cfg.Addr == "" {
-		cfg.Addr = ":8080"
+		cfg.Addr = ":8085"
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = "filet-data"
@@ -269,6 +269,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	deviceID := strings.TrimSpace(q.Get("device_id"))
 	name := strings.TrimSpace(q.Get("name"))
 	platform := strings.TrimSpace(q.Get("platform"))
+	ephemeral := q.Get("ephemeral") == "1"
+	if ephemeral && deviceID == "" {
+		writeErr(w, http.StatusBadRequest, "网页接收模式需要 device_id")
+		return
+	}
 	if deviceID != "" && !deviceIDRe.MatchString(deviceID) {
 		writeErr(w, http.StatusBadRequest, "device_id 无效")
 		return
@@ -288,7 +293,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if deviceID != "" {
+	if deviceID != "" && !ephemeral {
 		if err := s.store.UpsertDevice(store.Device{ID: deviceID, Username: username, Name: name, Platform: platform}); err != nil {
 			log.Printf("登记设备失败: %v", err)
 		}
@@ -298,13 +303,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		peerID = "p-" + randomHex(8)
 	}
 	c := &client{
-		hub:      s.hub,
-		username: username,
-		peerID:   peerID,
-		deviceID: deviceID,
-		conn:     conn,
-		send:     make(chan []byte, 32),
-		done:     make(chan struct{}),
+		hub:       s.hub,
+		username:  username,
+		peerID:    peerID,
+		deviceID:  deviceID,
+		name:      name,
+		platform:  platform,
+		ephemeral: ephemeral,
+		conn:      conn,
+		send:      make(chan []byte, 32),
+		done:      make(chan struct{}),
 	}
 	s.hub.add(c)
 	c.sendEnvelope(protocol.Envelope{
@@ -319,7 +327,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	c.readLoop()
 	s.hub.remove(c)
 	c.close()
-	if deviceID != "" {
+	if deviceID != "" && !ephemeral {
 		if err := s.store.MarkSeen(deviceID); err != nil {
 			log.Printf("更新设备时间失败: %v", err)
 		}
@@ -398,8 +406,10 @@ func (s *Server) broadcastDevices(username string) {
 func (s *Server) deviceList(username string) []protocol.Device {
 	online := s.hub.onlineDeviceIDs(username)
 	devs := s.store.Devices(username)
-	out := make([]protocol.Device, 0, len(devs))
+	out := make([]protocol.Device, 0, len(devs)+4)
+	seen := make(map[string]bool, len(devs))
 	for _, d := range devs {
+		seen[d.ID] = true
 		out = append(out, protocol.Device{
 			ID:       d.ID,
 			Name:     d.Name,
@@ -407,6 +417,14 @@ func (s *Server) deviceList(username string) []protocol.Device {
 			Online:   online[d.ID],
 			LastSeen: d.LastSeen,
 		})
+	}
+	now := time.Now().UTC()
+	for _, d := range s.hub.ephemeralDevices(username) {
+		if seen[d.ID] {
+			continue
+		}
+		d.LastSeen = now
+		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Online != out[j].Online {

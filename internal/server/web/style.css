@@ -193,3 +193,11 @@ progress::-webkit-progress-bar { background: #edf1f7; }
 progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width .2s ease; }
 progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 .t-meta { color: var(--muted); font-size: 12px; margin-top: 7px; word-break: break-all; }
+.t-status.link { color: var(--accent); }
+.transfer.clickable { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.transfer.clickable:hover { border-color: var(--accent); background: #fafcff; }
+
+.badge.web { color: var(--accent); background: #e8efff; }
+.recv { margin-top: 20px; }
+.recv .transfers { margin-top: 4px; }
+.recv .transfers:empty { display: none; }

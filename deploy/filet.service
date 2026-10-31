@@ -9,7 +9,7 @@ Type=simple
 User=filet
 Group=filet
 # 把 --public-ip 换成 ECS 公网 IP（会自动下发内置 STUN 地址）
-ExecStart=/usr/local/bin/filet server -l 127.0.0.1:8080 -d /var/lib/filet --stun :3478 --public-ip 203.0.113.10
+ExecStart=/usr/local/bin/filet server -l 127.0.0.1:8085 -d /var/lib/filet --stun :3478 --public-ip 203.0.113.10
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

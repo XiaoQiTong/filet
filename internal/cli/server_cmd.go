@@ -63,7 +63,7 @@ func newServerCmd() *cobra.Command {
 			return srv.Run(ctx)
 		},
 	}
-	cmd.Flags().StringVarP(&listen, "listen", "l", ":8080", "HTTP 监听地址（建议放在反向代理后面，监听 127.0.0.1）")
+	cmd.Flags().StringVarP(&listen, "listen", "l", ":8085", "HTTP 监听地址（默认 8085，建议放在反向代理后面，监听 127.0.0.1）")
 	cmd.Flags().StringVarP(&dataDir, "data", "d", "filet-data", "数据目录（账号、设备、密钥）")
 	cmd.Flags().BoolVar(&noRegister, "no-register", false, "关闭自助注册")
 	cmd.Flags().StringVar(&iceFlag, "ice", defaultICE, "下发给客户端的 STUN 地址，逗号分隔")

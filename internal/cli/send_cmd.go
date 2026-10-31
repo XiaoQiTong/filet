@@ -260,6 +260,8 @@ func applySignal(env protocol.Envelope, conn *p2p.Conn, devID string) (*webrtc.S
 	switch sig.Kind {
 	case "answer":
 		return sig.Description, nil
+	case "reject":
+		return nil, fmt.Errorf("目标设备未开启接收")
 	case "candidate":
 		if sig.Candidate != nil {
 			_ = conn.AddCandidate(*sig.Candidate)

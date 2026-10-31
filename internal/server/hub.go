@@ -17,14 +17,17 @@ const (
 )
 
 type client struct {
-	hub      *hub
-	username string
-	peerID   string
-	deviceID string
-	conn     *websocket.Conn
-	send     chan []byte
-	done     chan struct{}
-	once     sync.Once
+	hub       *hub
+	username  string
+	peerID    string
+	deviceID  string
+	name      string
+	platform  string
+	ephemeral bool
+	conn      *websocket.Conn
+	send      chan []byte
+	done      chan struct{}
+	once      sync.Once
 }
 
 func (c *client) close() {
@@ -109,6 +112,25 @@ func (h *hub) onlineDeviceIDs(username string) map[string]bool {
 		if c.username == username && c.deviceID != "" {
 			out[c.deviceID] = true
 		}
+	}
+	return out
+}
+
+// ephemeralDevices 返回只存在于当前会话的接收端（网页接收模式），不落库。
+func (h *hub) ephemeralDevices(username string) []protocol.Device {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]protocol.Device, 0, len(h.clients))
+	for _, c := range h.clients {
+		if c.username != username || !c.ephemeral || c.deviceID == "" {
+			continue
+		}
+		out = append(out, protocol.Device{
+			ID:       c.deviceID,
+			Name:     c.name,
+			Platform: c.platform,
+			Online:   true,
+		})
 	}
 	return out
 }
