@@ -1,0 +1,9 @@
+/bin/
+/.toolchain/
+/.cache/
+/.tmp/
+/devdata/
+/devrecv/
+/dist/
+/data/
+*.log

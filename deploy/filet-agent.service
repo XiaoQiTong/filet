@@ -1,0 +1,23 @@
+[Unit]
+Description=filet agent（P2P 文件接收端）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 先以运行用户登录一次：sudo -u filet FILET_CONFIG=/var/lib/filet-agent/config.json filet login -s https://files.example.com -u alice
+User=filet
+Group=filet
+Environment=FILET_CONFIG=/var/lib/filet-agent/config.json
+ExecStart=/usr/local/bin/filet agent -n %H -d /var/lib/filet-agent/downloads
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/filet-agent
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

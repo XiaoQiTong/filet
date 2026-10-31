@@ -1,0 +1,66 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，例如 v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: VERSION="${{ steps.v.outputs.version }}" sh scripts/build.sh
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p out
+          for f in dist/filet-*; do
+            base=$(basename "$f")
+            case "$base" in
+              *.exe)
+                zip -q -j "out/filet-${VERSION}-windows-amd64.zip" "$f"
+                ;;
+              *)
+                osarch=${base#filet-}
+                tar -czf "out/filet-${VERSION}-${osarch}.tar.gz" -C dist "$base"
+                ;;
+            esac
+          done
+          (cd out && sha256sum filet-* > SHA256SUMS)
+          ls -lh out
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.version }}
+          name: filet ${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: out/*

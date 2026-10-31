@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>filet · 点对点文件直发</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="auth" class="auth">
+    <div class="card">
+      <h1>filet</h1>
+      <p class="sub">账号登录 · 设备管理 · 点对点直发</p>
+      <div class="tabs">
+        <button id="tabLogin" class="tab active" type="button">登录</button>
+        <button id="tabRegister" class="tab" type="button">注册</button>
+      </div>
+      <form id="authForm">
+        <label>用户名<input id="username" autocomplete="username" required></label>
+        <label>密码<input id="password" type="password" autocomplete="current-password" required></label>
+        <button id="authSubmit" type="submit">登录</button>
+        <p id="authError" class="error"></p>
+      </form>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header>
+      <div class="brand">filet<span>P2P 直发</span></div>
+      <div class="who"><span id="whoami"></span><button id="logout" class="ghost" type="button">退出</button></div>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>我的设备</h2>
+          <button id="refresh" class="ghost" type="button">刷新</button>
+        </div>
+        <p class="hint">只有在线设备能接收。目标设备需要先运行 <code>filet agent</code>。</p>
+        <ul id="devices" class="devices"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>发送文件</h2>
+        <div id="drop" class="drop">
+          <p><span id="fileLabel">拖入文件，或选择</span> <button id="pick" class="link" type="button">选择文件</button></p>
+          <input id="fileInput" type="file" hidden>
+        </div>
+        <div class="actions">
+          <button id="send" type="button" disabled>发送给选中设备</button>
+          <button id="selectOnline" class="ghost" type="button">全选在线</button>
+        </div>
+        <p class="hint">文件在浏览器与目标设备之间通过 WebRTC 直连传输，不经过服务器。</p>
+        <ul id="transfers" class="transfers"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
