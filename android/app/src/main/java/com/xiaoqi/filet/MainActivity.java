@@ -420,7 +420,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    @android.annotation.RequiresApi(Build.VERSION_CODES.Q)
     private String saveToDownloadsQ(String name, File tmp) throws Exception {
         ContentValues values = new ContentValues();
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
