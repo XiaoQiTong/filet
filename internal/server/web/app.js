@@ -663,6 +663,11 @@
         return;
       }
       if (ctrl.kind === 'done') {
+        try {
+          dc.send(JSON.stringify({ kind: 'ack' }));
+        } catch (err) {
+          /* 对端可能已经关通道，回执只是礼貌延后它的关闭 */
+        }
         doneResolve(ctrl);
         return;
       }
@@ -944,6 +949,16 @@
       }
     };
 
+    // done 发出去就立刻关通道，会把还在链路里的 done 一起掐掉，
+    // 发送端只能报「数据通道在传输中关闭」。等它回执，最多 5 秒。
+    let resolveAck = null;
+    const ackArrived = new Promise((res) => {
+      resolveAck = res;
+    });
+    const releasePeer = () => {
+      Promise.race([ackArrived, sleep(5000)]).then(() => closeRecvPeer(from));
+    };
+
     const succeed = async () => {
       if (finished) return;
       finished = true;
@@ -975,7 +990,7 @@
         } catch (e) {
           /* ignore */
         }
-        setTimeout(() => closeRecvPeer(from), 1000);
+        releasePeer();
         return;
       }
       try {
@@ -983,7 +998,7 @@
       } catch (err) {
         /* ignore */
       }
-      setTimeout(() => closeRecvPeer(from), 1000);
+      releasePeer();
     };
 
     const fail = async (message) => {
@@ -996,11 +1011,23 @@
       } catch (err) {
         /* ignore */
       }
-      setTimeout(() => closeRecvPeer(from), 1000);
+      releasePeer();
     };
 
     dc.binaryType = 'arraybuffer';
     dc.onmessage = async (ev) => {
+      if (typeof ev.data === 'string' && ev.data.charAt(0) === '{') {
+        let kind = '';
+        try {
+          kind = (JSON.parse(ev.data) || {}).kind || '';
+        } catch (err) {
+          /* 非控制帧 */
+        }
+        if (kind === 'ack') {
+          resolveAck();
+          return;
+        }
+      }
       if (finished) return;
       if (typeof ev.data === 'string') {
         let ctrl;

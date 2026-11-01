@@ -110,7 +110,11 @@ func newSendCmd() *cobra.Command {
 					failed++
 					continue
 				}
-				fmt.Printf("  ✓ 已送达 %s，保存在 %s\n", dev.Name, res.Path)
+				if res.MD5 == "" {
+					fmt.Printf("  ✓ 已送达 %s，保存在 %s\n", dev.Name, res.Path)
+				} else {
+					fmt.Printf("  ✓ 已送达 %s，保存在 %s（md5=%s）\n", dev.Name, res.Path, res.MD5)
+				}
 			}
 			if failed > 0 {
 				return fmt.Errorf("%d 台设备发送失败", failed)

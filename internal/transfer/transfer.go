@@ -3,6 +3,7 @@ package transfer
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,10 @@ const (
 	ChunkSize = 16 * 1024
 	highWater = 1 << 20
 	lowWater  = 256 << 10
+
+	// ackWait 是发出 done 后等待发送方回执的时间。收到 done 就立刻关通道，
+	// 会把还在链路里的 done 一起掐掉，发送方只能报「数据通道在传输中关闭」。
+	ackWait = 5 * time.Second
 )
 
 type Control struct {
@@ -31,6 +36,7 @@ type Control struct {
 	Name   string `json:"name,omitempty"`
 	Size   int64  `json:"size,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
+	MD5    string `json:"md5,omitempty"`
 	OK     bool   `json:"ok,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Bytes  int64  `json:"bytes,omitempty"`
@@ -41,6 +47,7 @@ type Result struct {
 	OK   bool
 	Path string
 	Size int64
+	MD5  string
 }
 
 // Send streams one file over dc. progress is called after every chunk.
@@ -59,10 +66,12 @@ func Send(ctx context.Context, dc *webrtc.DataChannel, filePath, name string, pr
 	}
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	mh := md5.New()
+	if _, err := io.Copy(io.MultiWriter(h, mh), f); err != nil {
 		return Result{}, err
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
+	md5sum := hex.EncodeToString(mh.Sum(nil))
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return Result{}, err
 	}
@@ -90,7 +99,7 @@ func Send(ctx context.Context, dc *webrtc.DataChannel, filePath, name string, pr
 		}
 	})
 
-	meta, err := json.Marshal(Control{Kind: "meta", Name: name, Size: info.Size(), SHA256: sum})
+	meta, err := json.Marshal(Control{Kind: "meta", Name: name, Size: info.Size(), SHA256: sum, MD5: md5sum})
 	if err != nil {
 		return Result{}, err
 	}
@@ -105,6 +114,7 @@ func Send(ctx context.Context, dc *webrtc.DataChannel, filePath, name string, pr
 		return Result{}, fmt.Errorf("等待接收方就绪: %w", err)
 	}
 	if ready.Kind == "done" {
+		sendAck(dc)
 		return Result{}, errors.New(ready.Error)
 	}
 
@@ -139,10 +149,16 @@ func Send(ctx context.Context, dc *webrtc.DataChannel, filePath, name string, pr
 	if err != nil {
 		return Result{}, fmt.Errorf("等待接收方确认: %w", err)
 	}
+	sendAck(dc)
 	if !done.OK {
 		return Result{}, fmt.Errorf("接收方失败: %s", done.Error)
 	}
-	return Result{OK: true, Path: done.Path, Size: done.Bytes}, nil
+	return Result{OK: true, Path: done.Path, Size: done.Bytes, MD5: done.MD5}, nil
+}
+
+// sendAck 告知接收方「done 我收到了」，它才会在收到后立即关闭通道。
+func sendAck(dc *webrtc.DataChannel) {
+	_ = dc.SendText(`{"kind":"ack"}`)
 }
 
 func waitControl(ctx context.Context, ch <-chan Control, kind string) (Control, error) {
@@ -192,6 +208,7 @@ func (r *Receiver) Handle(ctx context.Context, dc *webrtc.DataChannel) (Result, 
 		saveDir: saveDir,
 		logf:    r.Logf,
 		doneCh:  make(chan struct{}),
+		ackCh:   make(chan struct{}, 1),
 	}
 	dc.OnMessage(st.onMessage)
 	dc.OnClose(func() { st.abort("传输连接已关闭") })
@@ -201,6 +218,7 @@ func (r *Receiver) Handle(ctx context.Context, dc *webrtc.DataChannel) (Result, 
 	case <-ctx.Done():
 		st.abort("传输超时或已取消")
 	}
+	st.waitAck()
 	return st.result, st.err
 }
 
@@ -212,6 +230,7 @@ type recvState struct {
 	file     *os.File
 	writer   *bufio.Writer
 	hash     hash.Hash
+	md5h     hash.Hash
 	meta     Control
 	written  int64
 	tmpPath  string
@@ -219,11 +238,32 @@ type recvState struct {
 	result   Result
 	err      error
 	doneCh   chan struct{}
+	ackCh    chan struct{}
+}
+
+// waitAck 等发送方回执，最多 ackWait；对端是旧版本时不至于卡死。
+func (s *recvState) waitAck() {
+	timer := time.NewTimer(ackWait)
+	defer timer.Stop()
+	select {
+	case <-s.ackCh:
+	case <-timer.C:
+	}
 }
 
 func (s *recvState) onMessage(m webrtc.DataChannelMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if m.IsString {
+		var c Control
+		if json.Unmarshal(m.Data, &c) == nil && c.Kind == "ack" {
+			select {
+			case s.ackCh <- struct{}{}:
+			default:
+			}
+			return
+		}
+	}
 	if s.finished {
 		return
 	}
@@ -250,6 +290,10 @@ func (s *recvState) onMessage(m webrtc.DataChannelMessage) {
 		return
 	}
 	if _, err := s.hash.Write(m.Data); err != nil {
+		s.failLocked("计算校验值失败: " + err.Error())
+		return
+	}
+	if _, err := s.md5h.Write(m.Data); err != nil {
 		s.failLocked("计算校验值失败: " + err.Error())
 		return
 	}
@@ -281,6 +325,7 @@ func (s *recvState) startLocked(c Control) {
 	s.tmpPath = f.Name()
 	s.writer = bufio.NewWriterSize(f, 256*1024)
 	s.hash = sha256.New()
+	s.md5h = md5.New()
 	s.meta = c
 	if s.logf != nil {
 		s.logf("开始接收 %s (%d 字节)", c.Name, c.Size)
@@ -315,22 +360,28 @@ func (s *recvState) completeLocked() {
 		s.failLocked("sha256 校验失败")
 		return
 	}
+	gotMD5 := hex.EncodeToString(s.md5h.Sum(nil))
+	if s.meta.MD5 != "" && !strings.EqualFold(gotMD5, s.meta.MD5) {
+		os.Remove(s.tmpPath)
+		s.failLocked("md5 校验失败")
+		return
+	}
 	finalPath := uniquePath(s.saveDir, sanitizeName(s.meta.Name))
 	if err := os.Rename(s.tmpPath, finalPath); err != nil {
 		os.Remove(s.tmpPath)
 		s.failLocked("保存文件失败: " + err.Error())
 		return
 	}
-	done, _ := json.Marshal(Control{Kind: "done", OK: true, Path: finalPath, Bytes: s.written})
+	done, _ := json.Marshal(Control{Kind: "done", OK: true, Path: finalPath, Bytes: s.written, MD5: gotMD5})
 	_ = s.dc.SendText(string(done))
 	if s.logf != nil {
-		note := ""
-		if s.meta.SHA256 == "" {
-			note = "（发送方未提供校验值）"
+		verified := "发送方未提供校验值，请自行比对 md5"
+		if s.meta.SHA256 != "" || s.meta.MD5 != "" {
+			verified = "已比对发送方校验值"
 		}
-		s.logf("接收完成: %s -> %s%s", s.meta.Name, finalPath, note)
+		s.logf("接收完成: %s -> %s（md5=%s，%s）", s.meta.Name, finalPath, gotMD5, verified)
 	}
-	s.finishLocked(nil, Result{OK: true, Path: finalPath, Size: s.written})
+	s.finishLocked(nil, Result{OK: true, Path: finalPath, Size: s.written, MD5: gotMD5})
 }
 
 func (s *recvState) failLocked(msg string) {
