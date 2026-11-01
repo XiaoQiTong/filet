@@ -14,6 +14,7 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
@@ -357,6 +358,27 @@ public class MainActivity extends Activity {
             } else if (wakeLock.isHeld()) {
                 wakeLock.release();
             }
+        }
+
+        /**
+         * 手机在「关于手机」里显示的那个设备名。DEVICE_NAME 在部分 SDK 里是 @hide，
+         * 所以写字面量键名，取不到就退回厂商 + 型号。
+         */
+        @JavascriptInterface
+        public String deviceName() {
+            String name = null;
+            try {
+                name = Settings.Global.getString(getContentResolver(), "device_name");
+            } catch (Exception ignored) {
+                // 有些 ROM 根本不填这个值
+            }
+            name = name == null ? "" : name.trim();
+            if (name.isEmpty() || name.startsWith("android-")) {
+                String brand = Build.BRAND == null ? "" : Build.BRAND.trim();
+                String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+                name = brand.isEmpty() || brand.equalsIgnoreCase(model) ? model : brand + " " + model;
+            }
+            return name;
         }
 
         @JavascriptInterface

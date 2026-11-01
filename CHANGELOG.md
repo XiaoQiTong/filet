@@ -2,6 +2,11 @@
 
 版本号遵循语义化命名，标签 `vX.Y.Z` 推送后由 GitHub Actions 打包并发布 Release，Release 正文取自本文件对应小节。
 
+## v0.4.3
+
+- 设备名改用真名字：Android APK 通过新增的 `AndroidFileBridge.deviceName()` 读系统「关于手机」里的设备名（`Settings.Global` 的 `device_name`），ROM 没填这个值就退回「品牌 + 型号」（例如 `Xiaomi 14`），设备列表里不再是一串「安卓 · filet」互不认识的叫法
+- 网页端也一起试：用 UA-CH 的 `navigator.userAgentData.getHighEntropyValues(['model'])` 取机型，安卓手机浏览器一般能报出 `Pixel 8` 这类型号；桌面 Chrome/Edge 这项是空的，仍退回「Chrome 页面」，Firefox/Safari 不提供 UA-CH，行为不变。旧版 APK 没有 `deviceName()` 这个方法时页面会自动退回浏览器命名，不会报错
+
 ## v0.4.2
 
 - Android APK 支持覆盖安装：`versionCode` 不再固定 1，改由版本号算出来（`v0.4.2` → 402），配齐 `FILET_APK_KEYSTORE_B64` 等四个签名 secrets 后，每次 Release 都是同一个 keystore 签的名，新包直接盖在旧包上，不用先卸载（卸载会顺手清掉已填的服务器地址）

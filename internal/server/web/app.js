@@ -161,7 +161,7 @@
     return data || {};
   }
 
-  function showApp(username) {
+  async function showApp(username) {
     if (!username) return;
     state.loggedIn = true;
     state.dormant = false;
@@ -171,8 +171,8 @@
     $('#whoami').textContent = username;
     ensureRecvIdentity();
     const label = browserLabel();
-    state.recvName = android ? '安卓 · filet' : label + ' 页面';
     state.recvPlatform = android ? 'web/android' : 'web/' + label.toLowerCase();
+    state.recvName = await localDeviceName();
     state.receive = true;
     renderReceivePanel();
     connectWS();
@@ -826,6 +826,29 @@
     if (/Chrome\//.test(ua)) return 'Chrome';
     if (/Safari\//.test(ua)) return 'Safari';
     return '浏览器';
+  }
+
+  // 设备名优先用端上的真名字：APK 报「关于手机」里那个设备名，浏览器只有 UA-CH 的 model 提示，
+  // 桌面 Chrome/Edge 的 model 一般是空的，就退回「Chrome 页面」这种叫法。
+  function localDeviceName() {
+    if (android && typeof android.deviceName === 'function') {
+      try {
+        const raw = String(android.deviceName()).trim();
+        if (raw && raw !== 'null') {
+          return Promise.resolve(raw);
+        }
+      } catch (err) {
+        /* 旧版 APK 没这个方法，退回浏览器命名 */
+      }
+    }
+    const hints = navigator.userAgentData;
+    if (hints && typeof hints.getHighEntropyValues === 'function') {
+      return hints.getHighEntropyValues(['model']).then(
+        (info) => (info && info.model ? info.model : browserLabel() + ' 页面'),
+        () => browserLabel() + ' 页面'
+      );
+    }
+    return Promise.resolve(browserLabel() + ' 页面');
   }
 
   function randomHex(n) {
