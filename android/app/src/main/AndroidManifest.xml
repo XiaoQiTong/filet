@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- App 内检测到新版本后自己拉起安装（还需要用户在系统里允许「安装未知应用」） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- 微信等外部应用给的是 file:// 路径时（Android 7 以前的老版本），需要读存储权限 -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -41,6 +44,13 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!-- 不引 AndroidX，所以自己写一个极小的 ContentProvider，把下载好的 APK 以 content:// 交给安装器 -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.xiaoqi.filet.apk"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

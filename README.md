@@ -138,7 +138,9 @@ Linux 机器可以装成系统服务，参考 `deploy/filet-agent.service`（先
 
 `android/` 是网页端的 WebView 壳，不重写业务逻辑：界面还是那套页面，原生只补三件 WebView 做不到的事——注册系统「打开方式」、把收到的文件写进下载目录、记住服务器地址。
 
-安装：从 Release 下载 `filet-android.apk`，允许「安装未知来源应用」后直接装。没有配置签名 keystore 时 CI 产出的是 debug 签名包，日后换成自己的 keystore 需要先卸载旧版。
+安装：从 Release 下载 `filet-android.apk`，允许「安装未知来源应用」后直接装。签名 keystore 配好之后，新包可以覆盖安装（卸载会顺手清掉已填的服务器地址）；**没配 keystore 时 CI 每次现生成一把临时 debug key，签名跟上一个包不一致，必须先卸载旧版才能装新的**。
+
+APK 每 24 小时问一次 GitHub Release 有没有新版本（对比 APK 里的版本号和最新标签），有就弹「下载安装」，下载完直接拉起系统安装界面，前提是该 APK 由同一个 keystore 签名。没网、GitHub 打不开、限流时一律静默跳过，不打扰；首次启动正在接微信文件时也不会弹。
 
 首次打开会让你填服务器地址（写完整，例如 `http://1.2.3.4:8085` 或 `https://files.example.com`），之后登录页底部的「服务器 …… 更改」可以随时改。
 
@@ -153,7 +155,7 @@ Linux 机器可以装成系统服务，参考 `deploy/filet-agent.service`（先
 - `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发）时交叉编译并创建 GitHub Release，附带可下载的压缩包和 `SHA256SUMS`；Release 正文取自 `CHANGELOG.md` 里对应的 `## vX.Y.Z` 小节，缺这一节会直接失败。APK 在同一条 workflow 的 `apk` 任务里用 runner 自带的 Android SDK 编译，一起挂进 Release
 - `.github/workflows/apk.yml`：手动触发，只出 APK artifact，不发版也能装上手机试
 
-APK 签名走仓库 secrets：`FILET_APK_KEYSTORE_B64`（keystore 的 base64）、`FILET_APK_STORE_PASSWORD`、`FILET_APK_KEY_ALIAS`、`FILET_APK_KEY_PASSWORD`。四个都没配时退回 debug 签名，构建日志会显式说明。
+APK 签名走仓库 secrets：`FILET_APK_KEYSTORE_B64`（keystore 的 base64）、`FILET_APK_STORE_PASSWORD`、`FILET_APK_KEY_ALIAS`、`FILET_APK_KEY_PASSWORD`。四个都没配时退回 debug 签名，构建日志会显式说明。**要覆盖安装和 App 内自动更新，这四个就必须配齐而且别再换**：换了 keystore，已装机的用户只能卸载重装。keystore 请自己留好备份，仓库里不放（`android/.gitignore` 已经忽略 `*.keystore`）。
 
 发版前先在 `CHANGELOG.md` 补好新版本小节，再推送标签：
 

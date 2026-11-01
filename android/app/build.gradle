@@ -4,7 +4,12 @@ plugins {
 
 def apkKeystore = System.getenv('FILET_APK_KEYSTORE')
 // CI 用 -PfiletVersion=v0.4.0 把标签版本写进 APK
-def apkVersion = (findProperty('filetVersion') ?: '0.4.0').toString()
+def apkVersion = (findProperty('filetVersion') ?: '0.4.0').toString().replaceFirst(/^v/, '')
+def apkParts = apkVersion.tokenize('.')
+// 0.4.2 -> 402：版本升一级 versionCode 就跟着升，覆盖安装和 App 内点「更新」才不会被系统拒
+def apkCode = apkParts.size() == 3
+        ? (apkParts[0] as int) * 10000 + (apkParts[1] as int) * 100 + (apkParts[2] as int)
+        : 1
 
 android {
     namespace 'com.xiaoqi.filet'
@@ -14,7 +19,7 @@ android {
         applicationId 'com.xiaoqi.filet'
         minSdk 24
         targetSdk 34
-        versionCode 1
+        versionCode apkCode
         versionName apkVersion
     }
 

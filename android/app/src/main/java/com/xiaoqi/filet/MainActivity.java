@@ -28,13 +28,18 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
@@ -56,6 +61,11 @@ public class MainActivity extends Activity {
     private static final long MAX_PUSH_BYTES = 128L * 1024 * 1024;
     private static final int PUSH_CHUNK_BYTES = 192 * 1024;
     private static final int PUSH_WINDOW = 4;
+
+    // 只在自己 GitHub 仓的 Release 里找新版本；拿不到就当没更新
+    private static final String RELEASE_API = "https://api.github.com/repos/XiaoQiTong/filet/releases/latest";
+    private static final String PREF_UPDATE_AT = "updateCheckAt";
+    private static final long UPDATE_CHECK_INTERVAL = 24 * 3600 * 1000L;
 
     private WebView web;
     private PowerManager.WakeLock wakeLock;
@@ -101,6 +111,9 @@ public class MainActivity extends Activity {
             askServer(true);
         } else {
             web.loadUrl(server);
+        }
+        if (incomingUri == null && server != null && !server.isEmpty()) {
+            maybeCheckUpdate();
         }
     }
 
@@ -501,6 +514,182 @@ public class MainActivity extends Activity {
 
     private void toast(String text) {
         runOnUiThread(() -> Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show());
+    }
+
+    // ---------------------------------------------------------------- 版本更新
+
+    /** 问一次 GitHub 最新 Release，拿不到、超时、被墙都当没更新，不弹任何东西打扰。 */
+    private void maybeCheckUpdate() {
+        long now = System.currentTimeMillis();
+        if (now - prefs.getLong(PREF_UPDATE_AT, 0L) < UPDATE_CHECK_INTERVAL) {
+            return;
+        }
+        prefs.edit().putLong(PREF_UPDATE_AT, now).apply();
+        new Thread(() -> {
+            String tag = "";
+            String notes = "";
+            String url = "";
+            long size = 0;
+            try {
+                JSONObject release = new JSONObject(httpGet(RELEASE_API, 8000));
+                tag = release.optString("tag_name");
+                JSONArray assets = release.optJSONArray("assets");
+                for (int i = 0; assets != null && i < assets.length(); i++) {
+                    JSONObject asset = assets.optJSONObject(i);
+                    if (asset != null && "filet-android.apk".equals(asset.optString("name"))) {
+                        url = asset.optString("browser_download_url");
+                        size = asset.optLong("size");
+                        notes = release.optString("body");
+                    }
+                }
+            } catch (Exception ignored) {
+                return;
+            }
+            if (url.isEmpty() || !isNewer(tag, installedVersion())) {
+                return;
+            }
+            final String fTag = tag;
+            final String fNotes = notes;
+            final String fUrl = url;
+            final long fSize = size;
+            runOnUiThread(() -> askInstall(fTag, fNotes, fUrl, fSize));
+        }).start();
+    }
+
+    private void askInstall(String tag, String notes, final String url, long size) {
+        String kb = size > 0 ? "（" + Math.max(1, size / 1024) + "KB）" : "";
+        new AlertDialog.Builder(this)
+                .setTitle("filet " + tag + " 可更新" + kb)
+                .setMessage(summary(notes))
+                .setPositiveButton("下载安装", (dialog, which) -> downloadAndInstall(url, tag))
+                .setNegativeButton("以后再说", null)
+                .show();
+    }
+
+    private void downloadAndInstall(final String url, String tag) {
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            File out = new File(ApkProvider.dir(MainActivity.this), "filet-" + tag.replaceAll("[^0-9A-Za-z._-]", "") + ".apk");
+            try {
+                for (File stale : emptyIfNull(out.getParentFile().listFiles())) {
+                    if (stale.getName().endsWith(".apk")) {
+                        stale.delete();
+                    }
+                }
+                conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                if (conn.getResponseCode() != 200) {
+                    toast("下载失败：HTTP " + conn.getResponseCode());
+                    return;
+                }
+                try (InputStream in = conn.getInputStream(); OutputStream os = new FileOutputStream(out)) {
+                    byte[] buf = new byte[16384];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        os.write(buf, 0, n);
+                    }
+                    os.flush();
+                }
+                installApk(out);
+            } catch (Exception err) {
+                out.delete();
+                toast("下载失败：" + describe(err));
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+        }).start();
+    }
+
+    private void installApk(File file) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(ApkProvider.uriFor(file), "application/vnd.android.package-archive");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(intent);
+        } catch (Exception err) {
+            toast("打不开安装界面：" + describe(err));
+        }
+    }
+
+    private String installedVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception err) {
+            return "";
+        }
+    }
+
+    private static String httpGet(String url, int timeoutMs) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestProperty("User-Agent", "filet-android");
+        conn.setRequestProperty("Accept", "application/vnd.github+json");
+        conn.setConnectTimeout(timeoutMs);
+        conn.setReadTimeout(timeoutMs);
+        try {
+            if (conn.getResponseCode() != 200) {
+                throw new IOException("HTTP " + conn.getResponseCode());
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            int total = 0;
+            try (InputStream in = conn.getInputStream()) {
+                while ((n = in.read(buf)) > 0 && total < 256 * 1024) {
+                    bos.write(buf, 0, n);
+                    total += n;
+                }
+            }
+            return new String(bos.toByteArray(), "UTF-8");
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private static String summary(String body) {
+        String text = body == null ? "" : body.replaceAll("[#*`]", "").trim();
+        if (text.isEmpty()) {
+            return "去 GitHub 看更新说明。";
+        }
+        return text.length() > 240 ? text.substring(0, 240) + "…" : text;
+    }
+
+    private static File[] emptyIfNull(File[] files) {
+        return files == null ? new File[0] : files;
+    }
+
+    static boolean isNewer(String want, String have) {
+        int[] a = parseVersion(want);
+        int[] b = parseVersion(have);
+        for (int i = 0; i < Math.max(a.length, b.length); i++) {
+            int x = i < a.length ? a[i] : 0;
+            int y = i < b.length ? b[i] : 0;
+            if (x != y) {
+                return x > y;
+            }
+        }
+        return false;
+    }
+
+    private static int[] parseVersion(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        if (text.startsWith("v")) {
+            text = text.substring(1);
+        }
+        String[] parts = text.isEmpty() ? new String[0] : text.split("\\.");
+        int[] out = new int[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            String digits = parts[i].replaceAll("\\D.*$", "");
+            try {
+                out[i] = Integer.parseInt(digits);
+            } catch (Exception err) {
+                out[i] = 0;
+            }
+        }
+        return out;
     }
 
     // ---------------------------------------------------------------- WebView 回调
