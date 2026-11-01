@@ -82,6 +82,16 @@ func (a *Agent) session(ctx context.Context) (bool, error) {
 		case <-stop:
 		}
 	}()
+	go func() {
+		addr, err := p2p.MappedAddr(a.opts.ICE, 4*time.Second)
+		if err != nil {
+			return
+		}
+		if err := ws.SendInfo(ctx, addr); err != nil {
+			return
+		}
+		a.logf("外网地址: %s", addr)
+	}()
 
 	peers := map[string]*p2p.Conn{}
 	var mu sync.Mutex

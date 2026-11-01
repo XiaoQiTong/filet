@@ -9,6 +9,9 @@
     ice: [],
     file: null,
     loggedIn: false,
+    everOpened: false,
+    dormant: false,
+    lastActivity: Date.now(),
     mode: 'login',
     pending: new Map(),
     sending: false,
@@ -19,17 +22,23 @@
     recvDirHandle: null,
     recvPeers: new Map(),
     recvCandidates: new Map(),
+    recvOffers: new Map(),
     recvNames: new Set(),
     recvItems: [],
   };
 
   const RECV_LIST_MAX = 12;
+  const OFFER_TTL = 5 * 60 * 1000;
+  const ANSWER_WAIT = 5 * 60 * 1000;
+  const IDLE_MS = 30 * 60 * 1000;
+  const IDLE_TICK = 30 * 1000;
 
   document.addEventListener('DOMContentLoaded', init);
 
   function init() {
     bindAuth();
     bindMain();
+    bindIdleWatch();
     ensureRecvIdentity();
     fetch('/api/ice')
       .then((r) => (r.ok ? r.json() : null))
@@ -100,9 +109,16 @@
   function showApp(username) {
     if (!username) return;
     state.loggedIn = true;
+    state.dormant = false;
+    state.lastActivity = Date.now();
     $('#auth').hidden = true;
     $('#app').hidden = false;
     $('#whoami').textContent = username;
+    ensureRecvIdentity();
+    const label = browserLabel();
+    state.recvName = label + ' 页面';
+    state.recvPlatform = 'web/' + label.toLowerCase();
+    state.receive = true;
     renderReceivePanel();
     connectWS();
     loadDevices();
@@ -110,17 +126,17 @@
 
   function showAuth() {
     state.loggedIn = false;
-    if (state.receive) {
-      state.receive = false;
-      state.recvDirHandle = null;
-      state.recvNames.clear();
-      state.recvItems = [];
-      for (const from of Array.from(state.recvPeers.keys())) closeRecvPeer(from);
-      state.recvCandidates.clear();
-      $('#recvToggle').textContent = '接收文件';
-      $('#recvPanel').hidden = true;
-      $('#recvList').textContent = '';
-    }
+    state.everOpened = false;
+    state.dormant = false;
+    state.receive = false;
+    clearOffers();
+    state.recvDirHandle = null;
+    state.recvNames.clear();
+    state.recvItems = [];
+    for (const from of Array.from(state.recvPeers.keys())) closeRecvPeer(from);
+    state.recvCandidates.clear();
+    $('#recvPanel').hidden = true;
+    $('#recvList').textContent = '';
     if (state.ws) {
       try {
         state.ws.close();
@@ -130,13 +146,84 @@
       state.ws = null;
     }
     state.devices = [];
+    setConnStatus('off', '');
     $('#app').hidden = true;
     $('#auth').hidden = false;
     $('#password').value = '';
   }
 
-  function connectWS() {
+  function wsOnline() {
+    return !!state.ws && state.ws.readyState === WebSocket.OPEN;
+  }
+
+  function setConnStatus(kind, text) {
+    const el = $('#connStatus');
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = !text;
+    el.className = 'conn' + (text ? ' ' + kind : '');
+    el.title = kind === 'sleep' ? '页面已休眠，操作一下（点击/按键）即可唤醒' : '';
+  }
+
+  function bindIdleWatch() {
+    const mark = () => {
+      state.lastActivity = Date.now();
+      if (state.dormant) wakeUp();
+    };
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((type) =>
+      window.addEventListener(type, mark, { passive: true, capture: true })
+    );
+    window.addEventListener('focus', mark);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) mark();
+    });
+    setInterval(() => {
+      if (!state.loggedIn || state.dormant) return;
+      if (Date.now() - state.lastActivity < IDLE_MS) return;
+      if (isBusy()) {
+        state.lastActivity = Date.now();
+        return;
+      }
+      goDormant();
+    }, IDLE_TICK);
+  }
+
+  function isBusy() {
+    return (
+      state.sending ||
+      state.pending.size > 0 ||
+      state.recvPeers.size > 0 ||
+      state.recvOffers.size > 0
+    );
+  }
+
+  function goDormant() {
+    state.dormant = true;
+    const ws = state.ws;
+    state.ws = null;
+    if (ws) {
+      ws.onclose = null;
+      try {
+        ws.close();
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    clearOffers();
+    setConnStatus('sleep', '已休眠');
+    renderDevices();
+  }
+
+  function wakeUp() {
+    if (!state.dormant) return;
+    state.dormant = false;
+    state.lastActivity = Date.now();
     if (!state.loggedIn) return;
+    connectWS();
+  }
+
+  function connectWS() {
+    if (!state.loggedIn || state.dormant) return;
     if (state.ws && state.ws.readyState <= WebSocket.OPEN) return;
     const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
     let url = scheme + location.host + '/api/ws';
@@ -151,6 +238,13 @@
     }
     const ws = new WebSocket(url);
     state.ws = ws;
+    setConnStatus('mid', state.everOpened ? '重连中' : '连接中');
+    ws.onopen = () => {
+      state.everOpened = true;
+      setConnStatus('on', '本端在线');
+      renderDevices();
+      reportPublicAddr(ws);
+    };
     ws.onmessage = (ev) => {
       let msg;
       try {
@@ -167,21 +261,27 @@
         state.devices = msg.devices || [];
         renderDevices();
       } else if (msg.type === 'signal') {
-        const handler = state.pending.get(msg.from);
-        if (handler) {
-          handler(msg.data);
+        const data = msg.data;
+        if (data && data.kind === 'offer') {
+          handleIncomingSignal(msg.from, data);
           return;
         }
-        handleIncomingSignal(msg.from, msg.data);
+        const handler = state.pending.get(msg.from);
+        if (handler) handler(data);
+        if (data && data.kind === 'candidate') handleIncomingSignal(msg.from, data);
       } else if (msg.type === 'error') {
         console.warn('服务端提示:', msg.error);
       }
     };
     ws.onclose = async () => {
       if (state.ws === ws) state.ws = null;
-      if (!state.loggedIn) return;
+      clearOffers();
+      if (!state.loggedIn || state.dormant) return;
+      setConnStatus('off', '连接已断开');
+      renderDevices();
       await sleep(2000);
-      if (!state.loggedIn) return;
+      setConnStatus('mid', '重连中');
+      if (!state.loggedIn || state.dormant) return;
       try {
         const resp = await fetch('/api/me');
         if (!resp.ok) {
@@ -193,6 +293,69 @@
       }
       connectWS();
     };
+  }
+
+  async function reportPublicAddr(ws) {
+    const deadline = Date.now() + 5000;
+    while (!state.ice.length && Date.now() < deadline) await sleep(200);
+    if (!state.ice.length) return;
+    const addr = await probePublicAddr();
+    if (!addr || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: 'info', public_addr: addr }));
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  function probePublicAddr() {
+    if (typeof RTCPeerConnection !== 'function') return Promise.resolve('');
+    return new Promise((resolve) => {
+      let pc = null;
+      let timer = null;
+      const finish = (value) => {
+        if (timer) clearTimeout(timer);
+        if (pc) {
+          try {
+            pc.close();
+          } catch (err) {
+            /* ignore */
+          }
+        }
+        resolve(value);
+      };
+      timer = setTimeout(() => finish(''), 4000);
+      try {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: state.ice.slice() }] });
+      } catch (err) {
+        finish('');
+        return;
+      }
+      pc.createDataChannel('probe');
+      pc.onicecandidate = (ev) => {
+        const cand = ev.candidate;
+        if (!cand) return;
+        const parts = String(cand.candidate || '').split(' ');
+        const type = cand.type || candidateType(parts);
+        if (type !== 'srflx') return;
+        const ip = cand.address || parts[4];
+        const port = cand.port || Number(parts[5]);
+        if (!ip || !port) return;
+        finish(formatAddr(ip, port));
+      };
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .catch(() => finish(''));
+    });
+  }
+
+  function candidateType(parts) {
+    const idx = parts.indexOf('typ');
+    return idx >= 0 ? parts[idx + 1] : '';
+  }
+
+  function formatAddr(ip, port) {
+    return (ip.indexOf(':') >= 0 ? '[' + ip + ']' : ip) + ':' + port;
   }
 
   async function loadDevices() {
@@ -231,8 +394,9 @@
 
     for (const dev of state.devices) {
       const own = state.receive && dev.id === state.recvID;
+      const online = own ? wsOnline() : dev.online;
       const li = document.createElement('li');
-      li.className = 'device' + (dev.online && !own ? '' : ' offline');
+      li.className = 'device' + (online ? '' : ' offline');
 
       const label = document.createElement('label');
       const cb = document.createElement('input');
@@ -254,9 +418,24 @@
       meta.textContent = bits.join(' · ');
       main.append(name, meta);
 
+      if (dev.public_addr || dev.location) {
+        const net = document.createElement('span');
+        net.className = 'd-net';
+        net.textContent = [dev.public_addr ? '外网 ' + dev.public_addr : '', dev.location]
+          .filter(Boolean)
+          .join(' · ');
+        main.append(net);
+      }
+
       const badge = document.createElement('span');
-      badge.className = 'badge ' + (own ? 'web' : dev.online ? 'on' : 'off');
-      badge.textContent = own ? '本页面' : dev.online ? '在线' : '离线';
+      badge.className = 'badge ' + (own ? (online ? 'web' : 'off') : online ? 'on' : 'off');
+      badge.textContent = own
+        ? online
+          ? '本页面 · 在线'
+          : '本页面 · 离线'
+        : online
+          ? '在线'
+          : '离线';
 
       label.append(cb, main, badge);
       li.appendChild(label);
@@ -273,13 +452,6 @@
         /* ignore */
       }
       showAuth();
-    });
-    $('#recvToggle').addEventListener('click', () => {
-      if (state.receive) {
-        disableReceive();
-      } else {
-        enableReceive();
-      }
     });
     $('#pickDir').addEventListener('click', async () => {
       if (typeof window.showDirectoryPicker !== 'function') return;
@@ -384,7 +556,7 @@
       if (data.kind === 'answer' && data.description) {
         answerResolve(data.description);
       } else if (data.kind === 'reject') {
-        answerReject(new Error('目标设备未开启接收'));
+        answerReject(new Error('对方拒绝接收文件（或接收请求已过期）'));
       } else if (data.kind === 'candidate' && data.candidate) {
         if (remoteSet) {
           pc.addIceCandidate(data.candidate).catch(() => {});
@@ -404,16 +576,18 @@
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      ui.connecting('协商连接…');
+      ui.connecting('等待对方接收…');
       await signalSend(dev.id, {
         kind: 'offer',
+        name: file.name,
+        size: file.size,
         description: { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
       });
 
       const answer = await withTimeout(
         answerPromise,
-        30000,
-        '等待设备应答超时：设备可能不在线，或双方 NAT 无法穿透'
+        ANSWER_WAIT,
+        '等待对方接收超时（5 分钟）：设备可能不在线，或对方未点击接收'
       );
       await pc.setRemoteDescription(answer);
       remoteSet = true;
@@ -567,49 +741,9 @@
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  function enableReceive() {
-    if (!state.loggedIn || state.receive) return;
-    ensureRecvIdentity();
-    const label = browserLabel();
-    state.recvName = label + ' 页面';
-    state.recvPlatform = 'web/' + label.toLowerCase();
-    state.receive = true;
-    $('#recvToggle').textContent = '停止接收';
-    renderReceivePanel();
-    reconnectWS();
-  }
-
-  function disableReceive() {
-    if (!state.receive) return;
-    state.receive = false;
-    state.recvDirHandle = null;
-    state.recvNames.clear();
-    state.recvItems = [];
-    for (const from of Array.from(state.recvPeers.keys())) closeRecvPeer(from);
-    state.recvCandidates.clear();
-    $('#recvToggle').textContent = '接收文件';
-    $('#recvPanel').hidden = true;
-    $('#recvList').textContent = '';
-    if (state.loggedIn) reconnectWS();
-  }
-
-  function reconnectWS() {
-    if (!state.loggedIn) return;
-    const old = state.ws;
-    state.ws = null;
-    if (old) {
-      try {
-        old.close();
-      } catch (err) {
-        /* ignore */
-      }
-    }
-    connectWS();
-  }
-
   function renderReceivePanel() {
     const panel = $('#recvPanel');
-    if (!state.receive) {
+    if (!state.loggedIn) {
       panel.hidden = true;
       return;
     }
@@ -619,31 +753,61 @@
     pick.hidden = !canPick;
     pick.textContent = state.recvDirHandle ? '更换目录' : '选择保存目录';
     let text =
-      '接收已开启：' +
+      '本页面默认既能发送也能接收（' +
       state.recvName +
-      ' · 保存到 ' +
+      '）。别人发文件给你时，会先出现在下方列表，点击「接收」后文件才开始传输。';
+    text +=
+      ' 收到的文件保存到 ' +
       (state.recvDirHandle ? '「' + state.recvDirHandle.name + '」' : '浏览器默认下载目录') +
-      '。保持本页面打开，别人即可把文件发到这台设备。';
+      '，点击条目即可下载（最多保留 ' + RECV_LIST_MAX + ' 条）。';
     if (!state.recvDirHandle) {
       text += canPick
         ? ' 未选择目录时文件会先缓存在内存，大文件建议先选目录。'
         : ' 当前浏览器不支持目录直写，文件会先缓存在内存，超大文件可能失败。';
     }
-    text += ' 收到的文件会立即出现在下方列表，点击即可下载（最多保留 ' + RECV_LIST_MAX + ' 条）。';
     $('#recvStatus').textContent = text;
+  }
+
+  function clearOffers() {
+    for (const from of Array.from(state.recvOffers.keys())) dropOffer(from);
+  }
+
+  function dropOffer(from) {
+    const offer = state.recvOffers.get(from);
+    if (!offer) return;
+    state.recvOffers.delete(from);
+    if (offer.timer) clearTimeout(offer.timer);
+    if (offer.row && offer.row.li.parentNode) offer.row.li.parentNode.removeChild(offer.row.li);
+    state.recvCandidates.delete(from);
+  }
+
+  function deviceName(id) {
+    const dev = state.devices.find((d) => d.id === id);
+    if (dev && dev.name) return dev.name;
+    if (id && id.indexOf('p-') === 0) return '命令行客户端';
+    return shortID(id);
   }
 
   function handleIncomingSignal(from, data) {
     if (!data) return;
     if (data.kind === 'offer' && data.description) {
-      if (!state.receive) {
+      if (state.recvOffers.has(from)) dropOffer(from);
+      const row = createPendingRow(
+        deviceName(from),
+        data.name || '文件',
+        Number(data.size) || 0,
+        () => acceptOffer(from),
+        () => rejectOffer(from)
+      );
+      const offer = { description: data.description, row: row, timer: null };
+      offer.timer = setTimeout(() => {
+        if (state.recvOffers.get(from) !== offer) return;
+        state.recvOffers.delete(from);
+        state.recvCandidates.delete(from);
         signalSend(from, { kind: 'reject' }).catch(() => {});
-        return;
-      }
-      handleOffer(from, data.description).catch((err) => {
-        console.warn('处理来电失败:', err);
-        signalSend(from, { kind: 'reject' }).catch(() => {});
-      });
+        row.expired();
+      }, OFFER_TTL);
+      state.recvOffers.set(from, offer);
       return;
     }
     if (data.kind === 'candidate' && data.candidate) {
@@ -651,7 +815,41 @@
     }
   }
 
-  async function handleOffer(from, description) {
+  async function acceptOffer(from) {
+    const offer = state.recvOffers.get(from);
+    if (!offer) return;
+    state.recvOffers.delete(from);
+    if (offer.timer) clearTimeout(offer.timer);
+    offer.row.accepting();
+    try {
+      await handleOffer(from, offer.description, offer.row);
+      setTimeout(() => {
+        const entry = state.recvPeers.get(from);
+        if (entry && !entry.opened) {
+          offer.row.fail('直连建立超时：双方可能都在对称 NAT / CGNAT 后');
+          closeRecvPeer(from);
+        }
+      }, 35000);
+    } catch (err) {
+      console.warn('处理来电失败:', err);
+      offer.row.fail('建立直连失败：' + (err && err.message ? err.message : err));
+      signalSend(from, { kind: 'reject' }).catch(() => {});
+      closeRecvPeer(from);
+      state.recvCandidates.delete(from);
+    }
+  }
+
+  function rejectOffer(from) {
+    const offer = state.recvOffers.get(from);
+    if (!offer) return;
+    state.recvOffers.delete(from);
+    if (offer.timer) clearTimeout(offer.timer);
+    state.recvCandidates.delete(from);
+    signalSend(from, { kind: 'reject' }).catch(() => {});
+    offer.row.rejected();
+  }
+
+  async function handleOffer(from, description, ui) {
     closeRecvPeer(from);
     const iceServers = state.ice.length ? [{ urls: state.ice.slice() }] : [];
     const pc = new RTCPeerConnection({ iceServers });
@@ -664,7 +862,8 @@
       }
     };
     pc.ondatachannel = (ev) => {
-      receiveDataChannel(ev.channel, from);
+      entry.opened = true;
+      receiveDataChannel(ev.channel, from, ui);
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
@@ -700,6 +899,13 @@
       const list = state.recvCandidates.get(from) || [];
       list.push(candidate);
       state.recvCandidates.set(from, list);
+      if (!state.recvOffers.has(from)) {
+        setTimeout(() => {
+          if (!state.recvPeers.has(from) && !state.recvOffers.has(from)) {
+            state.recvCandidates.delete(from);
+          }
+        }, 60 * 1000);
+      }
       return;
     }
     if (entry.remoteSet) {
@@ -720,8 +926,8 @@
     }
   }
 
-  async function receiveDataChannel(dc, from) {
-    const ui = createReceiveRow();
+  async function receiveDataChannel(dc, from, ui) {
+    ui = ui || createReceiveRow();
     let meta = null;
     let sink = null;
     let writeChain = Promise.resolve();
@@ -933,17 +1139,17 @@
     return Array.from(name).slice(0, 150).join('') || 'filet-download';
   }
 
-  function createReceiveRow() {
+  function createRecvRowBase(nameText, statusText) {
     const li = document.createElement('li');
     li.className = 'transfer';
 
     const head = document.createElement('div');
     head.className = 't-head';
     const name = document.createElement('span');
-    name.textContent = '接收中…';
+    name.textContent = nameText;
     const status = document.createElement('span');
     status.className = 't-status';
-    status.textContent = '等待中';
+    status.textContent = statusText;
     head.append(name, status);
 
     const bar = document.createElement('progress');
@@ -959,6 +1165,12 @@
     let last = 0;
     return {
       li: li,
+      bar: bar,
+      metaEl: meta,
+      setStatus(text, cls) {
+        status.textContent = text;
+        status.className = 't-status' + (cls ? ' ' + cls : '');
+      },
       meta(fileName, total) {
         name.textContent = fileName;
         meta.textContent = humanBytes(total);
@@ -1002,6 +1214,53 @@
         meta.textContent = text;
       },
     };
+  }
+
+  function createReceiveRow() {
+    return createRecvRowBase('接收中…', '等待中');
+  }
+
+  function createPendingRow(fromName, fileName, size, onAccept, onReject) {
+    const safe = sanitizeName(fileName);
+    const row = createRecvRowBase('收到文件请求', '待接收');
+    row.li.classList.add('pending');
+    const info =
+      safe + (size > 0 ? ' · ' + humanBytes(size) : '') + (fromName ? ' · 来自 ' + fromName : '');
+    row.metaEl.textContent = info;
+
+    const actions = document.createElement('div');
+    actions.className = 't-actions';
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.className = 'accept';
+    accept.textContent = '接收';
+    accept.addEventListener('click', onAccept);
+    const reject = document.createElement('button');
+    reject.type = 'button';
+    reject.className = 'ghost';
+    reject.textContent = '拒绝';
+    reject.addEventListener('click', onReject);
+    actions.append(accept, reject);
+    row.li.appendChild(actions);
+
+    row.accepting = () => {
+      row.li.classList.remove('pending');
+      actions.remove();
+      row.setStatus('协商连接…', '');
+    };
+    row.rejected = () => {
+      row.li.classList.remove('pending');
+      actions.remove();
+      row.bar.remove();
+      row.setStatus('已拒绝', 'bad');
+    };
+    row.expired = () => {
+      row.li.classList.remove('pending');
+      actions.remove();
+      row.bar.remove();
+      row.setStatus('已过期', 'bad');
+    };
+    return row;
   }
 
   function createTransferRow(dev, file) {

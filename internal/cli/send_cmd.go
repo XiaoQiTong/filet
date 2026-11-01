@@ -159,17 +159,22 @@ func sendToDevice(ctx context.Context, ws *client.WS, envCh <-chan protocol.Enve
 	if err != nil {
 		return transfer.Result{}, err
 	}
+	offer.Name = filepath.Base(filePath)
+	if info, statErr := os.Stat(filePath); statErr == nil {
+		offer.Size = info.Size()
+	}
 	if err := ws.SendSignal(ctx, dev.ID, offer); err != nil {
 		return transfer.Result{}, err
 	}
+	fmt.Fprintln(os.Stderr, "  等待对方接收…")
 
 	var answer *webrtc.SessionDescription
-	answerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	answerCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	for answer == nil {
 		select {
 		case <-answerCtx.Done():
 			cancel()
-			return transfer.Result{}, fmt.Errorf("等待应答超时：设备可能不在线，或双方 NAT 无法穿透")
+			return transfer.Result{}, fmt.Errorf("等待对方接收超时（5 分钟）：设备可能不在线，或对方未点击接收")
 		case env := <-envCh:
 			desc, err := applySignal(env, conn, dev.ID)
 			if err != nil {
@@ -261,7 +266,7 @@ func applySignal(env protocol.Envelope, conn *p2p.Conn, devID string) (*webrtc.S
 	case "answer":
 		return sig.Description, nil
 	case "reject":
-		return nil, fmt.Errorf("目标设备未开启接收")
+		return nil, fmt.Errorf("对方拒绝接收文件（或接收请求已过期）")
 	case "candidate":
 		if sig.Candidate != nil {
 			_ = conn.AddCandidate(*sig.Candidate)

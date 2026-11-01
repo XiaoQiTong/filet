@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"filet/internal/auth"
+	"filet/internal/geo"
 	"filet/internal/protocol"
 	"filet/internal/store"
 	"filet/internal/stunserver"
@@ -43,6 +45,7 @@ type Config struct {
 	TLSCert    string
 	TLSKey     string
 	STUNAddr   string
+	GeoAPI     string
 }
 
 type Server struct {
@@ -50,6 +53,7 @@ type Server struct {
 	store *store.Store
 	hub   *hub
 	limit *attemptLimiter
+	geo   *geo.Resolver
 }
 
 func New(cfg Config) (*Server, error) {
@@ -63,7 +67,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: st, hub: newHub(), limit: newAttemptLimiter()}, nil
+	return &Server{cfg: cfg, store: st, hub: newHub(), limit: newAttemptLimiter(), geo: geo.NewResolver(cfg.GeoAPI)}, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -303,16 +307,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		peerID = "p-" + randomHex(8)
 	}
 	c := &client{
-		hub:       s.hub,
-		username:  username,
-		peerID:    peerID,
-		deviceID:  deviceID,
-		name:      name,
-		platform:  platform,
-		ephemeral: ephemeral,
-		conn:      conn,
-		send:      make(chan []byte, 32),
-		done:      make(chan struct{}),
+		hub:        s.hub,
+		srv:        s,
+		username:   username,
+		peerID:     peerID,
+		deviceID:   deviceID,
+		name:       name,
+		platform:   platform,
+		ephemeral:  ephemeral,
+		observedIP: clientIP(r),
+		conn:       conn,
+		send:       make(chan []byte, 32),
+		done:       make(chan struct{}),
 	}
 	s.hub.add(c)
 	c.sendEnvelope(protocol.Envelope{
@@ -322,6 +328,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		Devices:  s.deviceList(username),
 	})
 	s.broadcastDevices(username)
+	go s.lookupLocation(c)
 
 	go c.writeLoop()
 	c.readLoop()
@@ -349,6 +356,15 @@ func (c *client) readLoop() {
 		}
 		var env protocol.Envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
+			continue
+		}
+		if env.Type == protocol.TypeInfo {
+			if addr := normalizeAddr(env.PublicAddr); addr != "" {
+				if c.hub.setPublicAddr(c, addr) {
+					c.srv.broadcastDevices(c.username)
+					go c.srv.lookupLocation(c)
+				}
+			}
 			continue
 		}
 		if env.Type != protocol.TypeSignal || env.To == "" {
@@ -405,6 +421,7 @@ func (s *Server) broadcastDevices(username string) {
 
 func (s *Server) deviceList(username string) []protocol.Device {
 	online := s.hub.onlineDeviceIDs(username)
+	meta := s.hub.deviceMeta(username)
 	devs := s.store.Devices(username)
 	out := make([]protocol.Device, 0, len(devs)+4)
 	seen := make(map[string]bool, len(devs))
@@ -426,6 +443,12 @@ func (s *Server) deviceList(username string) []protocol.Device {
 		d.LastSeen = now
 		out = append(out, d)
 	}
+	for i := range out {
+		if m, ok := meta[out[i].ID]; ok {
+			out[i].PublicAddr = m.addr
+			out[i].Location = m.location
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Online != out[j].Online {
 			return out[i].Online
@@ -433,6 +456,75 @@ func (s *Server) deviceList(username string) []protocol.Device {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// lookupLocation 异步解析（调用方用 go 启动）设备公网 IP 的归属地。
+func (s *Server) lookupLocation(c *client) {
+	if s.geo == nil {
+		return
+	}
+	ip := addrIP(s.hub.clientAddr(c))
+	if ip == "" {
+		return
+	}
+	if parsed := net.ParseIP(ip); parsed == nil || !isPublicIP(parsed) {
+		return
+	}
+	if !s.hub.claimGeo(c, ip) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	location := s.geo.Lookup(ctx, ip)
+	if location == "" {
+		return
+	}
+	if s.hub.setLocation(c, ip, location) {
+		s.broadcastDevices(c.username)
+	}
+}
+
+func normalizeAddr(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 64 {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		if ip := net.ParseIP(strings.Trim(raw, "[]")); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return ""
+	}
+	num, err := strconv.Atoi(port)
+	if err != nil || num <= 0 || num > 65535 {
+		return ""
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(num))
+}
+
+func addrIP(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return strings.Trim(host, "[]")
+	}
+	if ip := net.ParseIP(strings.Trim(addr, "[]")); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+func isPublicIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	return ip.IsGlobalUnicast()
 }
 
 func (s *Server) username(r *http.Request) (string, bool) {

@@ -20,6 +20,11 @@ type WS struct {
 	mu   sync.Mutex
 }
 
+const (
+	wsReadWait  = 90 * time.Second
+	wsWriteWait = 10 * time.Second
+)
+
 func DialWS(ctx context.Context, server, token, deviceID, name, platform string) (*WS, error) {
 	base := NormalizeServer(server)
 	u, err := url.Parse(base)
@@ -61,9 +66,14 @@ func DialWS(ctx context.Context, server, token, deviceID, name, platform string)
 		return nil, fmt.Errorf("连接信令服务失败: %w", err)
 	}
 	conn.SetReadLimit(1 << 20)
-	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(wsReadWait))
+	// 服务端每 30s 发 ping；必须在 ping 到达时续期，否则空闲连接会在 90s 后断开。
+	conn.SetPingHandler(func(data string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(wsReadWait))
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(wsWriteWait))
+	})
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return conn.SetReadDeadline(time.Now().Add(wsReadWait))
 	})
 	return &WS{conn: conn}, nil
 }
@@ -89,6 +99,20 @@ func (w *WS) SendSignal(ctx context.Context, to string, data any) error {
 	if err != nil {
 		return err
 	}
+	return w.write(ctx, env)
+}
+
+// SendInfo reports the client's STUN-mapped public address so other devices in
+// the same account can see it.
+func (w *WS) SendInfo(ctx context.Context, publicAddr string) error {
+	env, err := json.Marshal(protocol.Envelope{Type: protocol.TypeInfo, PublicAddr: publicAddr})
+	if err != nil {
+		return err
+	}
+	return w.write(ctx, env)
+}
+
+func (w *WS) write(ctx context.Context, raw []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
@@ -96,7 +120,7 @@ func (w *WS) SendSignal(ctx context.Context, to string, data any) error {
 		deadline = d
 	}
 	_ = w.conn.SetWriteDeadline(deadline)
-	return w.conn.WriteMessage(websocket.TextMessage, env)
+	return w.conn.WriteMessage(websocket.TextMessage, raw)
 }
 
 func (w *WS) Close() error {

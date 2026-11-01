@@ -17,17 +17,22 @@ const (
 )
 
 type client struct {
-	hub       *hub
-	username  string
-	peerID    string
-	deviceID  string
-	name      string
-	platform  string
-	ephemeral bool
-	conn      *websocket.Conn
-	send      chan []byte
-	done      chan struct{}
-	once      sync.Once
+	hub        *hub
+	srv        *Server
+	username   string
+	peerID     string
+	deviceID   string
+	name       string
+	platform   string
+	ephemeral  bool
+	observedIP string
+	publicAddr string
+	location   string
+	geoIP      string
+	conn       *websocket.Conn
+	send       chan []byte
+	done       chan struct{}
+	once       sync.Once
 }
 
 func (c *client) close() {
@@ -133,4 +138,74 @@ func (h *hub) ephemeralDevices(username string) []protocol.Device {
 		})
 	}
 	return out
+}
+
+type deviceMeta struct {
+	addr     string
+	location string
+}
+
+// deviceMeta 汇总在线设备的外网地址与归属地，key 为设备 ID。
+func (h *hub) deviceMeta(username string) map[string]deviceMeta {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := map[string]deviceMeta{}
+	for _, c := range h.clients {
+		if c.username != username || c.deviceID == "" {
+			continue
+		}
+		addr := c.publicAddr
+		if addr == "" {
+			addr = c.observedIP
+		}
+		if addr == "" && c.location == "" {
+			continue
+		}
+		out[c.deviceID] = deviceMeta{addr: addr, location: c.location}
+	}
+	return out
+}
+
+func (h *hub) setPublicAddr(c *client, addr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c.publicAddr == addr {
+		return false
+	}
+	c.publicAddr = addr
+	return true
+}
+
+func (h *hub) clientAddr(c *client) string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if c.publicAddr != "" {
+		return c.publicAddr
+	}
+	return c.observedIP
+}
+
+// claimGeo 保证同一连接对同一 IP 只发起一次归属地查询。
+func (h *hub) claimGeo(c *client, ip string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c.geoIP == ip {
+		return false
+	}
+	c.geoIP = ip
+	return true
+}
+
+func (h *hub) setLocation(c *client, ip, location string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	current := c.publicAddr
+	if current == "" {
+		current = c.observedIP
+	}
+	if addrIP(current) != ip || c.location == location {
+		return false
+	}
+	c.location = location
+	return true
 }

@@ -17,7 +17,10 @@ import (
 	"filet/internal/stunserver"
 )
 
-const defaultICE = "stun:stun.miwifi.com:3478,stun:stun.chat.bilibili.com:3478,stun:stun.l.google.com:19302"
+const (
+	defaultICE    = "stun:stun.miwifi.com:3478,stun:stun.chat.bilibili.com:3478,stun:stun.l.google.com:19302"
+	defaultGeoAPI = "http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,regionName,city"
+)
 
 func newServerCmd() *cobra.Command {
 	var (
@@ -29,6 +32,7 @@ func newServerCmd() *cobra.Command {
 		publicIP   string
 		certFile   string
 		keyFile    string
+		geoAPI     string
 	)
 	cmd := &cobra.Command{
 		Use:   "server",
@@ -54,6 +58,7 @@ func newServerCmd() *cobra.Command {
 				TLSCert:    certFile,
 				TLSKey:     keyFile,
 				STUNAddr:   stunAddr,
+				GeoAPI:     geoAPI,
 			})
 			if err != nil {
 				return err
@@ -69,6 +74,7 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringVar(&iceFlag, "ice", defaultICE, "下发给客户端的 STUN 地址，逗号分隔")
 	cmd.Flags().StringVar(&stunAddr, "stun", ":3478", "同时启动内置 STUN 的 UDP 地址，留空禁用")
 	cmd.Flags().StringVar(&publicIP, "public-ip", "", "ECS 公网 IP，提供后会自动加入内置 STUN 地址")
+	cmd.Flags().StringVar(&geoAPI, "geo-api", defaultGeoAPI, "按 IP 查询归属地的接口模板（{ip} 占位，兼容 ip-api.com 返回格式），留空禁用")
 	cmd.Flags().StringVar(&certFile, "tls-cert", "", "直接启用 HTTPS 的证书文件（可选）")
 	cmd.Flags().StringVar(&keyFile, "tls-key", "", "HTTPS 私钥文件（可选）")
 	return cmd

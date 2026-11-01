@@ -2,8 +2,12 @@ package p2p
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
+	"time"
 
+	"github.com/pion/stun/v4"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -13,6 +17,8 @@ type Signal struct {
 	Kind        string                     `json:"kind"`
 	Description *webrtc.SessionDescription `json:"description,omitempty"`
 	Candidate   *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
+	Name        string                     `json:"name,omitempty"`
+	Size        int64                      `json:"size,omitempty"`
 }
 
 type Conn struct {
@@ -115,4 +121,59 @@ func ForwardCandidates(pc *webrtc.PeerConnection, send func(Signal) error) {
 		init := c.ToJSON()
 		_ = send(Signal{Kind: "candidate", Candidate: &init})
 	})
+}
+
+// MappedAddr asks the first reachable STUN server for this host's public
+// transport address. The address reflects the NAT mapping of the probe; a
+// later WebRTC connection usually gets a different port.
+func MappedAddr(stunURLs []string, timeout time.Duration) (string, error) {
+	var lastErr error
+	for _, raw := range stunURLs {
+		uri, err := stun.ParseURI(raw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		addr, err := probeSTUN(uri, timeout)
+		if err == nil {
+			return addr, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("未配置 STUN 服务器")
+	}
+	return "", lastErr
+}
+
+func probeSTUN(uri *stun.URI, timeout time.Duration) (string, error) {
+	client, err := stun.DialURI(uri, &stun.DialConfig{})
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	var event stun.Event
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Do(stun.MustBuild(stun.TransactionID, stun.BindingRequest), func(ev stun.Event) {
+			event = ev
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", err
+		}
+	case <-time.After(timeout):
+		return "", fmt.Errorf("STUN 响应超时")
+	}
+	if event.Error != nil {
+		return "", event.Error
+	}
+	var mapped stun.XORMappedAddress
+	if err := mapped.GetFrom(event.Message); err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(mapped.IP.String(), strconv.Itoa(mapped.Port)), nil
 }

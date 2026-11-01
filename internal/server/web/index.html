@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f5f7fb">
   <title>filet · 点对点文件直发</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -28,7 +29,7 @@
   <div id="app" class="app" hidden>
     <header>
       <div class="brand">filet<span>P2P 直发</span></div>
-      <div class="who"><span id="whoami"></span><button id="recvToggle" class="ghost" type="button">接收文件</button><button id="logout" class="ghost" type="button">退出</button></div>
+      <div class="who"><button id="connStatus" class="conn" type="button" hidden></button><span id="whoami"></span><button id="logout" class="ghost" type="button">退出</button></div>
     </header>
     <main>
       <section class="panel">
@@ -36,7 +37,7 @@
           <h2>我的设备</h2>
           <button id="refresh" class="ghost" type="button">刷新</button>
         </div>
-        <p class="hint">只有在线设备能接收：目标设备需要运行 <code>filet agent</code>，或在浏览器页面开启「接收文件」。</p>
+        <p class="hint">只有在线设备能接收：目标设备需要运行 <code>filet agent</code>，或打开了 filet 网页（页面默认接收）。发给网页时对方需要先点击「接收」。本页面 30 分钟无操作会自动休眠并断开，点右上角「已休眠」或任意操作即可唤醒。</p>
         <ul id="devices" class="devices"></ul>
       </section>
 
@@ -55,7 +56,7 @@
       </section>
     </main>
 
-    <section id="recvPanel" class="panel recv" hidden>
+    <section id="recvPanel" class="panel recv">
       <div class="panel-head">
         <h2>接收文件</h2>
         <button id="pickDir" class="ghost" type="button" hidden>选择保存目录</button>
