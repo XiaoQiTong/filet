@@ -7,9 +7,6 @@
 - 新增 Android 端 APK（`android/`）：网页端的 WebView 壳，不重写业务逻辑，只补三件 WebView 做不到的事——① 注册系统「打开方式」，在微信里点开文件选「其他应用打开 → filet」，文件会自动填进发送框，勾设备即可发到电脑（整份读进内存，上限 128MB）② 收到的文件由原生写进「下载/filet」目录，Android 8 及更早退回应用专属目录并显示完整路径 ③ 记住服务器地址，首次启动弹窗填写，登录页底部「服务器 / 更改」随时改。传输期间持有 WakeLock
 - 网页端新增 `AndroidFileBridge` 桥（注入外部文件、分块保存、服务器地址、忙时唤醒锁）。浏览器里检测不到桥就走原逻辑，行为不变
 - CI：新增 `apk.yml`（手动触发，只出 APK artifact，不发版也能装手机）；`release.yml` 增加 `apk` 任务，用 runner 自带的 Android SDK 编译，`filet-android.apk` 与 6 个平台包一起挂进 Release 并计入 `SHA256SUMS`。签名读 `FILET_APK_KEYSTORE_B64` / `FILET_APK_STORE_PASSWORD` / `FILET_APK_KEY_ALIAS` / `FILET_APK_KEY_PASSWORD` 四个 secrets，未配置时退回 debug 签名并在日志里说明
-
-## v0.3.2
-
 - 修复：文件传完后网页端常报「数据通道在传输中关闭」，而接收端其实已经写盘成功。原因是接收端发出 `done` 确认后立即关闭 PeerConnection，把还在链路里的确认包一起掐掉，发送端等不到确认就误判失败。现在发送端收到 `done` 后回一条 `ack`，接收端收到 `ack`（或等满 5 秒）才关通道；网页接收端原先固定的 1 秒延时也换成同一套回执。CLI 发送端与网页发送端、agent 接收端与网页接收端两两组合均已实测通过
 - 新增：MD5 校验。`filet send` 现在同时计算 SHA-256 和 MD5 并随文件头发给接收端，接收端写盘后逐字节复算，任一不符即删除临时文件并报「md5 校验失败」；`filet agent` 的接收日志和 `filet send` 的成功输出都会打印落盘文件的 MD5，方便与源文件对账。浏览器无原生 MD5 实现，网页端发送仍不带校验值，此时接收端照样打印 MD5 并提示「发送方未提供校验值，请自行比对」
 
