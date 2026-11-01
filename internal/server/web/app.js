@@ -171,8 +171,8 @@
     $('#whoami').textContent = username;
     ensureRecvIdentity();
     const label = browserLabel();
-    state.recvName = label + ' 页面';
-    state.recvPlatform = 'web/' + label.toLowerCase();
+    state.recvName = android ? '安卓 · filet' : label + ' 页面';
+    state.recvPlatform = android ? 'web/android' : 'web/' + label.toLowerCase();
     state.receive = true;
     renderReceivePanel();
     connectWS();
@@ -328,11 +328,15 @@
         console.warn('服务端提示:', msg.error);
       }
     };
-    ws.onclose = async () => {
-      if (state.ws === ws) state.ws = null;
+    ws.onclose = async (ev) => {
+      if (state.ws !== ws) {
+        // 同一 device_id 的新连接会把旧连接顶掉，状态由还活着的那条报，否则页面永远卡在「重连中」
+        return;
+      }
+      state.ws = null;
       clearOffers();
       if (!state.loggedIn || state.dormant) return;
-      setConnStatus('off', '连接已断开');
+      setConnStatus('off', '连接已断开（' + ev.code + '）');
       renderDevices();
       await sleep(2000);
       setConnStatus('mid', '重连中');

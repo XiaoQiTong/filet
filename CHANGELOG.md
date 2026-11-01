@@ -2,6 +2,12 @@
 
 版本号遵循语义化命名，标签 `vX.Y.Z` 推送后由 GitHub Actions 打包并发布 Release，Release 正文取自本文件对应小节。
 
+## v0.4.1
+
+- 修复：网页端连接状态会被「顶号」的旧连接覆盖，一直显示「连接已断开 / 重连中」，即使当前连接是好的。现在只有当前那条 WebSocket 才有权改状态；断开提示里带上 WebSocket 关闭码，方便判断是被服务端拒绝还是网络问题
+- Android 端不再显示成「Chrome 页面」：检测到 `AndroidFileBridge` 时设备名用「安卓 · filet」、平台记作 `web/android`，普通浏览器里的命名和行为完全不变
+- APK：加载页面改用 `LOAD_NO_CACHE`，服务端升级后不会再被 WebView 的旧缓存挡住；从微信带文件进来时如果服务端网页还是没有桥的旧版本，直接弹提示「请把 filet 升级到 v0.4.0 再从微信打开」，不再静默不加载文件；debug 包开启 `setWebContentsDebuggingEnabled`，可以用电脑的 chrome://inspect 调手机上的页面
+
 ## v0.4.0
 
 - 新增 Android 端 APK（`android/`）：网页端的 WebView 壳，不重写业务逻辑，只补三件 WebView 做不到的事——① 注册系统「打开方式」，在微信里点开文件选「其他应用打开 → filet」，文件会自动填进发送框，勾设备即可发到电脑（整份读进内存，上限 128MB）② 收到的文件由原生写进「下载/filet」目录，Android 8 及更早退回应用专属目录并显示完整路径 ③ 记住服务器地址，首次启动弹窗填写，登录页底部「服务器 / 更改」随时改。传输期间持有 WakeLock

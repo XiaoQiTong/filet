@@ -82,6 +82,11 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setAllowContentAccess(true);
+        // 桥在网页 app.js 里，服务端升级后必须拿到新版页面，不能被 WebView 缓存挡住
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chooser());
         web.addJavascriptInterface(new Bridge(), "AndroidFileBridge");
@@ -517,6 +522,19 @@ public class MainActivity extends Activity {
                 // 没有能接的应用就算了
             }
             return true;
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            // 旧版服务端的 app.js 里没有桥，文件会静静躺着不动——探测一次，说清楚原因
+            view.evaluateJavascript(
+                    "(typeof window.FiletAndroid==='object'&&typeof window.AndroidFileBridge==='object')?1:0",
+                    value -> {
+                        boolean supported = !"0".equals(value);
+                        if (!supported && incomingUri != null) {
+                            toast("服务端网页还是旧版本，没有 Android 桥；请把 filet 升级到 v0.4.0 再从微信打开");
+                        }
+                    });
         }
 
         @Override
