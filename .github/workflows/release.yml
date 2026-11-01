@@ -57,10 +57,27 @@ jobs:
           (cd out && sha256sum filet-* > SHA256SUMS)
           ls -lh out
 
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p notes
+          awk -v ver="## $VERSION" '
+            index($0, ver) == 1 { grab = 1; next }
+            grab && /^## / { grab = 0 }
+            grab { print }
+          ' CHANGELOG.md > notes/RELEASE_NOTES.md
+          if [ ! -s notes/RELEASE_NOTES.md ]; then
+            echo "CHANGELOG.md 缺少 $VERSION 小节，无法生成 Release 说明" >&2
+            exit 1
+          fi
+          cat notes/RELEASE_NOTES.md
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.v.outputs.version }}
           name: filet ${{ steps.v.outputs.version }}
-          generate_release_notes: true
+          body_path: notes/RELEASE_NOTES.md
           fail_on_unmatched_files: true
           files: out/*

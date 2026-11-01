@@ -138,9 +138,9 @@ Linux 机器可以装成系统服务，参考 `deploy/filet-agent.service`（先
 仓库内置两条 workflow：
 
 - `.github/workflows/ci.yml`：每次 push / PR 执行 `go vet`、编译并交叉编译，产物作为 workflow artifact 保留 7 天
-- `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发）时交叉编译并创建 GitHub Release，附带可下载的压缩包和 `SHA256SUMS`
+- `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发）时交叉编译并创建 GitHub Release，附带可下载的压缩包和 `SHA256SUMS`；Release 正文取自 `CHANGELOG.md` 里对应的 `## vX.Y.Z` 小节，缺这一节会直接失败
 
-推送标签即可发版：
+发版前先在 `CHANGELOG.md` 补好新版本小节，再推送标签：
 
 ```sh
 git tag v0.1.0
