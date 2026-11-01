@@ -1,0 +1,77 @@
+name: apk
+
+# Android 壳单独打包：不发版也能装上手机试。
+# 配了 FILET_APK_KEYSTORE_B64 就出签名 release 包，没配则退回 debug 包（同样能直接安装）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "写进 APK 的版本号，例如 v0.4.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Ensure Android SDK 34
+        run: |
+          set -eu
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          if [ ! -d "${ANDROID_HOME}/platforms/android-34" ]; then
+            yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+          fi
+
+      - name: Build
+        id: build
+        env:
+          KEYSTORE_B64: ${{ secrets.FILET_APK_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.FILET_APK_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.FILET_APK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.FILET_APK_KEY_PASSWORD }}
+          APK_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          args=""
+          if [ -n "${APK_VERSION:-}" ]; then
+            args="-PfiletVersion=$APK_VERSION"
+          fi
+          cd android
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/filet.keystore"
+            export FILET_APK_KEYSTORE="$RUNNER_TEMP/filet.keystore"
+            export FILET_APK_STORE_PASSWORD="$STORE_PASSWORD"
+            export FILET_APK_KEY_ALIAS="$KEY_ALIAS"
+            export FILET_APK_KEY_PASSWORD="$KEY_PASSWORD"
+            gradle --no-daemon $args :app:assembleRelease
+            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/filet-android.apk"
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "未配置签名 keystore，产出 debug 包"
+            gradle --no-daemon $args :app:assembleDebug
+            cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/filet-android.apk"
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+          fi
+          (cd "$GITHUB_WORKSPACE" && sha256sum filet-android.apk)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filet-android-${{ steps.build.outputs.signed }}
+          path: filet-android.apk
+          if-no-files-found: error

@@ -177,6 +177,9 @@ form input:focus {
 form button[type=submit] { width: 100%; padding: 13px; margin-top: 6px; }
 .error { color: var(--bad); font-size: 13px; min-height: 18px; margin: 12px 0 0; }
 
+.serverline { margin: 14px 0 0; font-size: 12px; color: var(--muted); word-break: break-all; }
+.serverline .link { font-size: 12px; }
+
 .app {
   max-width: 1060px;
   margin: 0 auto;

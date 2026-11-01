@@ -23,6 +23,7 @@
 - 文件分块走 WebRTC DataChannel，带背压控制；CLI 发送时附带 SHA-256 与 MD5，接收端自动比对；无论哪种发送方式，接收端都会打印落盘文件的 MD5
 - 接收端自动按原名保存，重名自动加 ` (1)`；文件名做路径穿越与 Windows 保留名清洗
 - 内置轻量 STUN 服务，ECS 上无需额外组件
+- Android APK（网页端壳）：微信里「其他应用打开」选 filet，就能把聊天里的文件发到电脑
 - 单文件二进制，前端资源嵌入其中，无运行时依赖
 
 ## 快速开始（本机试跑）
@@ -133,12 +134,26 @@ filet agent -n my-laptop -d ~/Downloads/filet
 
 Linux 机器可以装成系统服务，参考 `deploy/filet-agent.service`（先以同一用户执行一次 `login` 生成配置）。Windows 可以用计划任务或 `nssm` 把 `filet.exe agent` 做成开机自启。
 
+## Android 端（APK）
+
+`android/` 是网页端的 WebView 壳，不重写业务逻辑：界面还是那套页面，原生只补三件 WebView 做不到的事——注册系统「打开方式」、把收到的文件写进下载目录、记住服务器地址。
+
+安装：从 Release 下载 `filet-android.apk`，允许「安装未知来源应用」后直接装。没有配置签名 keystore 时 CI 产出的是 debug 签名包，日后换成自己的 keystore 需要先卸载旧版。
+
+首次打开会让你填服务器地址（写完整，例如 `http://1.2.3.4:8085` 或 `https://files.example.com`），之后登录页底部的「服务器 …… 更改」可以随时改。
+
+- **发文件**：在微信里长按/点开文件 →「其他应用打开」→ 选 filet，文件会自动填进发送框，勾上目标设备点「发送给选中设备」即可。系统文件管理器的「打开方式」和「分享」同样能用。这条路径要求文件先整体读进内存，上限 128MB，更大的文件请在电脑上用 `filet send`。
+- **收文件**：App 打开并登录后就是在线设备，别人发过来时点「接收」，文件由原生写进「下载/filet」目录（Android 8 及更早写到应用专属目录，页面会显示完整路径）。
+
 ## 自动打包（GitHub Actions）
 
 仓库内置两条 workflow：
 
 - `.github/workflows/ci.yml`：每次 push / PR 执行 `go vet`、编译并交叉编译，产物作为 workflow artifact 保留 7 天
-- `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发）时交叉编译并创建 GitHub Release，附带可下载的压缩包和 `SHA256SUMS`；Release 正文取自 `CHANGELOG.md` 里对应的 `## vX.Y.Z` 小节，缺这一节会直接失败
+- `.github/workflows/release.yml`：推送 `v*` 标签（或手动触发）时交叉编译并创建 GitHub Release，附带可下载的压缩包和 `SHA256SUMS`；Release 正文取自 `CHANGELOG.md` 里对应的 `## vX.Y.Z` 小节，缺这一节会直接失败。APK 在同一条 workflow 的 `apk` 任务里用 runner 自带的 Android SDK 编译，一起挂进 Release
+- `.github/workflows/apk.yml`：手动触发，只出 APK artifact，不发版也能装上手机试
+
+APK 签名走仓库 secrets：`FILET_APK_KEYSTORE_B64`（keystore 的 base64）、`FILET_APK_STORE_PASSWORD`、`FILET_APK_KEY_ALIAS`、`FILET_APK_KEY_PASSWORD`。四个都没配时退回 debug 签名，构建日志会显式说明。
 
 发版前先在 `CHANGELOG.md` 补好新版本小节，再推送标签：
 
@@ -156,6 +171,7 @@ Release 资产命名（`<version>` 带 `v` 前缀）：
 | Windows x64 | `filet-<version>-windows-amd64.zip` |
 | macOS Intel | `filet-<version>-darwin-amd64.tar.gz` |
 | macOS Apple Silicon | `filet-<version>-darwin-arm64.tar.gz` |
+| Android 7.0+ | `filet-android.apk`（文件名不带版本号，版本写在 APK 里） |
 
 下载后解压得到单文件二进制，直接按上文部署即可，不需要装 Go。CI 使用 `go.mod` 里声明的 Go 版本。
 
@@ -182,6 +198,7 @@ Release 资产命名（`<version>` 带 `v` 前缀）：
 - 浏览器直接发送不会预检接收端剩余磁盘空间，失败会在传输结束时报错。
 - 网页接收是临时设备：关闭页面就从设备列表消失，不会写进 `store.json`；每个标签页是独立设备。接收列表只保留最近 12 条，超出后旧条目自动移除。
 - 网页接收时，Chrome/Edge 可以选择目录把数据直接写入磁盘；其他浏览器或不选目录时文件会先缓存在内存，超大文件可能失败。接收页面需要一直开着，刷新后重新登录即可继续接收。
+- Android APK 是网页端的壳，不是原生客户端：能不能打洞取决于手机上的系统 WebView 版本，WebView 过旧或被厂商改过的机型可能直连失败；从微信「其他应用打开」递进来的文件要整体读进内存再发，超过 128MB 请改用电脑 `filet send`；没有后台服务，传输期间只持有一个 WakeLock，熄屏后被省电策略冻结仍会中断。
 
 ## 目录结构
 
@@ -195,6 +212,7 @@ internal/transfer  数据通道分块传输协议与落盘
 internal/stunserver 内置 STUN
 internal/cli       cobra 命令
 deploy             systemd 单元、Caddyfile
+android            Android 壳工程（Gradle + WebView，注册「打开方式」接收外部文件）
 scripts            env.sh（独立 Go 工具链）、build.sh（交叉编译）
-.github/workflows  CI 与 Release 自动打包
+.github/workflows  CI、Release 与 APK 自动打包
 ```

@@ -33,6 +33,41 @@
   const IDLE_MS = 30 * 60 * 1000;
   const IDLE_TICK = 30 * 1000;
 
+  // Android 壳通过 addJavascriptInterface 注入 AndroidFileBridge：WebView 里没有
+  // showDirectoryPicker，blob 下载点了也没反应，所以保存要交给原生。
+  const android =
+    window.AndroidFileBridge && typeof window.AndroidFileBridge.openSave === 'function'
+      ? window.AndroidFileBridge
+      : null;
+
+  function u8ToBase64(bytes) {
+    let bin = '';
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(bin);
+  }
+
+  function base64ToU8(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
+  }
+
+  function setBusy(on) {
+    if (android) {
+      try {
+        android.setBusy(!!on);
+      } catch (err) {
+        /* ignore */
+      }
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', init);
 
   function init() {
@@ -40,6 +75,15 @@
     bindMain();
     bindIdleWatch();
     ensureRecvIdentity();
+    if (android) {
+      exposeIncomingFile();
+      setBusy(false);
+      try {
+        android.pageReady();
+      } catch (err) {
+        /* ignore */
+      }
+    }
     fetch('/api/ice')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -76,6 +120,17 @@
         submit.disabled = false;
       }
     });
+    if (android && $('#serverLine')) {
+      $('#serverLine').hidden = false;
+      $('#serverHost').textContent = location.origin;
+      $('#serverEdit').addEventListener('click', () => {
+        try {
+          android.editServer();
+        } catch (err) {
+          /* ignore */
+        }
+      });
+    }
   }
 
   function setAuthMode(mode) {
@@ -499,6 +554,33 @@
     updateSendState();
   }
 
+  // 原生把「微信 → 其他应用打开」拿到的文件切成 base64 推过来，这里拼回 File
+  // 直接进现有发送流程；JS 无法自行读 content://，所以只能由原生喂。
+  function exposeIncomingFile() {
+    let name = '';
+    let parts = [];
+    window.FiletAndroid = {
+      fileStart(rawName) {
+        name = sanitizeName(rawName || 'incoming.bin');
+        parts = [];
+      },
+      fileChunk(b64) {
+        parts.push(base64ToU8(String(b64)));
+      },
+      fileAbort() {
+        parts = [];
+      },
+      fileEnd() {
+        const file = new File(parts, name, { type: 'application/octet-stream' });
+        parts = [];
+        setFile(file);
+        if (state.loggedIn) {
+          $('#devices').scrollIntoView({ block: 'nearest' });
+        }
+      },
+    };
+  }
+
   function updateSendState() {
     const count = document.querySelectorAll('#devices input[type=checkbox]:checked').length;
     const btn = $('#send');
@@ -519,6 +601,7 @@
 
     state.sending = true;
     updateSendState();
+    setBusy(true);
     $('#transfers').textContent = '';
 
     let failed = 0;
@@ -534,6 +617,7 @@
       }
     }
 
+    setBusy(false);
     state.sending = false;
     updateSendState();
     if (failed > 0) console.warn(failed + ' 台设备发送失败');
@@ -761,11 +845,12 @@
       '本页面默认既能发送也能接收（' +
       state.recvName +
       '）。别人发文件给你时，会先出现在下方列表，点击「接收」后文件才开始传输。';
-    text +=
-      ' 收到的文件保存到 ' +
-      (state.recvDirHandle ? '「' + state.recvDirHandle.name + '」' : '浏览器默认下载目录') +
-      '，点击条目即可下载（最多保留 ' + RECV_LIST_MAX + ' 条）。';
-    if (!state.recvDirHandle) {
+    text += android
+      ? ' 收到的文件直接写入手机的「下载」目录（最多保留 ' + RECV_LIST_MAX + ' 条记录）。'
+      : ' 收到的文件保存到 ' +
+        (state.recvDirHandle ? '「' + state.recvDirHandle.name + '」' : '浏览器默认下载目录') +
+        '，点击条目即可下载（最多保留 ' + RECV_LIST_MAX + ' 条）。';
+    if (!state.recvDirHandle && !android) {
       text += canPick
         ? ' 未选择目录时文件会先缓存在内存，大文件建议先选目录。'
         : ' 当前浏览器不支持目录直写，文件会先缓存在内存，超大文件可能失败。';
@@ -962,15 +1047,19 @@
     const succeed = async () => {
       if (finished) return;
       finished = true;
+      setBusy(false);
       let item = null;
       try {
         await writeChain;
-        if (sink.kind === 'file') {
+        if (sink.kind !== 'blob') {
           await sink.close();
           item = {
             name: sink.name,
-            handle: sink.fileHandle,
-            hint: '已保存到 ' + (state.recvDirHandle ? state.recvDirHandle.name + '/' : '') + sink.name,
+            handle: sink.fileHandle || null,
+            hint:
+              sink.kind === 'android'
+                ? '已保存到 ' + (sink.savedPath || sink.name)
+                : '已保存到 ' + (state.recvDirHandle ? state.recvDirHandle.name + '/' : '') + sink.name,
           };
         } else {
           item = {
@@ -1004,6 +1093,7 @@
     const fail = async (message) => {
       if (finished) return;
       finished = true;
+      setBusy(false);
       ui.fail(message);
       await abortSink();
       try {
@@ -1052,6 +1142,7 @@
           return;
         }
         startedAt = performance.now();
+        setBusy(true);
         try {
           dc.send(JSON.stringify({ kind: 'ready' }));
         } catch (err) {
@@ -1078,6 +1169,9 @@
 
   async function openRecvSink(name) {
     const dir = state.recvDirHandle;
+    if (android && !dir) {
+      return openAndroidSink(name);
+    }
     if (!dir) {
       const parts = [];
       return {
@@ -1102,6 +1196,50 @@
       close: () => writer.close(),
       abort: () => writer.abort(),
     };
+  }
+
+  // 攒够 256KB 再跨 JNI 调用一次：逐块 16KB 调原生开销太大。
+  function openAndroidSink(name) {
+    const token = String(android.openSave(name));
+    const sink = {
+      kind: 'android',
+      name: name,
+      savedPath: '',
+      parts: [],
+      buffered: 0,
+      write(chunk) {
+        sink.parts.push(chunk);
+        sink.buffered += chunk.length;
+        if (sink.buffered >= 256 * 1024) {
+          sink.flush();
+        }
+        return Promise.resolve();
+      },
+      flush() {
+        if (!sink.buffered) return;
+        const all = new Uint8Array(sink.buffered);
+        let off = 0;
+        for (const p of sink.parts) {
+          all.set(p, off);
+          off += p.length;
+        }
+        sink.parts = [];
+        sink.buffered = 0;
+        android.writeSave(token, u8ToBase64(all));
+      },
+      close() {
+        sink.flush();
+        sink.savedPath = String(android.closeSave(token));
+        return Promise.resolve();
+      },
+      abort() {
+        sink.parts = [];
+        sink.buffered = 0;
+        android.abortSave(token);
+        return Promise.resolve();
+      },
+    };
+    return sink;
   }
 
   function addRecvEntry(ui, item) {

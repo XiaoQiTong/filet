@@ -1,0 +1,50 @@
+plugins {
+    id 'com.android.application'
+}
+
+def apkKeystore = System.getenv('FILET_APK_KEYSTORE')
+// CI 用 -PfiletVersion=v0.4.0 把标签版本写进 APK
+def apkVersion = (findProperty('filetVersion') ?: '0.4.0').toString()
+
+android {
+    namespace 'com.xiaoqi.filet'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.xiaoqi.filet'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName apkVersion
+    }
+
+    signingConfigs {
+        if (apkKeystore) {
+            release {
+                storeFile file(apkKeystore)
+                storePassword System.getenv('FILET_APK_STORE_PASSWORD')
+                keyAlias System.getenv('FILET_APK_KEY_ALIAS')
+                keyPassword System.getenv('FILET_APK_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (apkKeystore) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        // release 构建只编译，不让 lint 的 deprecation / NewApi 检查把打包卡住
+        checkReleaseBuilds false
+    }
+}
