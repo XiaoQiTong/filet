@@ -287,10 +287,11 @@ header {
 
 main {
   display: grid;
-  grid-template-columns: 1fr 1.12fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
   gap: clamp(16px, 2.4vw, 24px);
   align-items: start;
 }
+main > .panel { min-width: 0; }
 
 .panel {
   background: var(--panel);
@@ -433,7 +434,7 @@ progress::-moz-progress-bar {
 .recv .transfers:empty { display: none; }
 
 @media (max-width: 920px) {
-  main { grid-template-columns: 1fr; }
+  main { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 600px) {
@@ -445,8 +446,9 @@ progress::-moz-progress-bar {
   .conn { padding: 6px 11px; }
   .panel { border-radius: 18px; }
   .actions { flex-direction: column; }
-  .actions button { width: 100%; min-width: 0; }
-  .device label { padding: 12px; gap: 10px; }
+  .actions button, .actions button:first-child { width: 100%; min-width: 0; }
+  .device label { padding: 12px; gap: 10px; min-width: 0; }
+  .d-meta { white-space: normal; overflow: visible; }
   .badge { align-self: flex-start; }
   .t-head { flex-direction: column; align-items: flex-start; gap: 3px; }
   .t-actions button { flex: 1; }

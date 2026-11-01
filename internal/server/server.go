@@ -327,6 +327,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		Username: username,
 		Devices:  s.deviceList(username),
 	})
+	s.renewToken(c)
 	s.broadcastDevices(username)
 	go s.lookupLocation(c)
 
@@ -394,6 +395,8 @@ func (c *client) readLoop() {
 func (c *client) writeLoop() {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
+	renew := time.NewTicker(tokenRenewPeriod)
+	defer renew.Stop()
 	for {
 		select {
 		case <-c.done:
@@ -408,8 +411,24 @@ func (c *client) writeLoop() {
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		case <-renew.C:
+			c.srv.renewToken(c)
 		}
 	}
+}
+
+// renewToken 下发一张新会话令牌。令牌只在登录时签发且 30 天过期，
+// 常驻 agent 若拿不到新令牌，离线一段时间后就会永久重连失败。
+// 网页端靠 HttpOnly cookie 维持会话，不必把令牌再暴露给脚本。
+func (s *Server) renewToken(c *client) {
+	if c.ephemeral {
+		return
+	}
+	token, err := auth.NewToken(s.store.Secret(), c.username)
+	if err != nil {
+		return
+	}
+	c.sendEnvelope(protocol.Envelope{Type: protocol.TypeToken, Token: token})
 }
 
 func (s *Server) broadcastDevices(username string) {

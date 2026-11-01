@@ -61,6 +61,10 @@ func DialWS(ctx context.Context, server, token, deviceID, name, platform string)
 	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		if resp != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusUnauthorized {
+				return nil, fmt.Errorf("会话无效或已过期，请在该设备重新运行 filet login")
+			}
 			return nil, fmt.Errorf("连接信令服务失败 (HTTP %d): %w", resp.StatusCode, err)
 		}
 		return nil, fmt.Errorf("连接信令服务失败: %w", err)

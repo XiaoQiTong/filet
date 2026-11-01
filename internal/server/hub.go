@@ -14,6 +14,9 @@ const (
 	writeWait  = 10 * time.Second
 	pongWait   = 90 * time.Second
 	pingPeriod = 30 * time.Second
+
+	// 令牌有效期 30 天，续期节奏取 1/2 天，留足断网重试余量。
+	tokenRenewPeriod = 12 * time.Hour
 )
 
 type client struct {

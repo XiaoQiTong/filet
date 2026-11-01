@@ -24,11 +24,15 @@ type Options struct {
 	SaveDir  string
 	ICE      []string
 	Logger   *log.Logger
+
+	// OnToken 在会话令牌续期后回调，用于把新令牌写回配置。
+	OnToken func(token string)
 }
 
 type Agent struct {
-	opts Options
-	log  *log.Logger
+	opts       Options
+	log        *log.Logger
+	tokenSaved time.Time
 }
 
 func New(opts Options) *Agent {
@@ -41,6 +45,21 @@ func New(opts Options) *Agent {
 
 func (a *Agent) logf(format string, args ...any) {
 	a.log.Printf(format, args...)
+}
+
+// tokenSaveInterval 限制配置写入频率：断线重连每次都会拿到新令牌，
+// 但内存里更新即可，落盘按小时节流。
+const tokenSaveInterval = time.Hour
+
+func (a *Agent) saveToken(token string) {
+	if a.opts.OnToken == nil {
+		return
+	}
+	if !a.tokenSaved.IsZero() && time.Since(a.tokenSaved) < tokenSaveInterval {
+		return
+	}
+	a.tokenSaved = time.Now()
+	a.opts.OnToken(token)
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -113,6 +132,12 @@ func (a *Agent) session(ctx context.Context) (bool, error) {
 		case protocol.TypeHello:
 			connected = true
 			a.logf("已上线：账号 %s / 设备 %s", env.Username, a.opts.Name)
+		case protocol.TypeToken:
+			if env.Token == "" || env.Token == a.opts.Token {
+				continue
+			}
+			a.opts.Token = env.Token
+			a.saveToken(env.Token)
 		case protocol.TypeError:
 			a.logf("服务端提示: %s", env.Error)
 		case protocol.TypeSignal:

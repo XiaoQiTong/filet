@@ -94,6 +94,19 @@ func newAgentCmd() *cobra.Command {
 				SaveDir:  absDir,
 				ICE:      iceURLs,
 				Logger:   logger,
+				OnToken: func(token string) {
+					fresh, err := client.LoadConfig()
+					if err != nil {
+						logger.Printf("会话续期失败（读取配置）: %v", err)
+						return
+					}
+					fresh.Token = token
+					if err := client.SaveConfig(fresh); err != nil {
+						logger.Printf("会话续期失败（写入配置）: %v", err)
+						return
+					}
+					logger.Printf("会话令牌已续期，重新计 30 天有效期")
+				},
 			})
 			return a.Run(ctx)
 		},

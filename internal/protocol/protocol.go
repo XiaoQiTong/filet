@@ -11,6 +11,7 @@ const (
 	TypeSignal  = "signal"
 	TypeInfo    = "info"
 	TypeError   = "error"
+	TypeToken   = "token"
 )
 
 type Device struct {
@@ -33,4 +34,5 @@ type Envelope struct {
 	Devices    []Device        `json:"devices,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	PublicAddr string          `json:"public_addr,omitempty"`
+	Token      string          `json:"token,omitempty"`
 }
